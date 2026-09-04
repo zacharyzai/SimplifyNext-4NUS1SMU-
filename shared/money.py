@@ -8,10 +8,6 @@ sidestep that class of bug entirely: every downstream module can add,
 subtract and compare cents with ordinary integer arithmetic and get an
 exact answer every time.
 """
-import re
-
-_CENTS_RE = re.compile(r"^-?\$?[\d,]+(\.\d{1,2})?$")
-
 
 def cents_from_string(s) -> int:
     """Parse "$1,234.50", "1234.5", or the number 1234.5 into 123450 cents.
