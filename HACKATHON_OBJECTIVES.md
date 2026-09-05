@@ -31,11 +31,15 @@ code (see the "Done when" evidence under each item), not by prior claims.
   `/trace/{id}`, `/health`, `/demo/reset` all returned valid JSON, including
   `/health` returning `{"ok": true, "bedrock": false}` with zero AWS
   credentials present.
-  **However, the module-swap half of this step's "done when" line
-  ("at least two real modules are swapped in") is NOT met — see
-  [SWAP_STATUS.md](docs/SWAP_STATUS.md). 0 of 4 nodes are real modules.**
-  The swap seam itself (does the graph fail loudly on a malformed swapped
-  node?) was tested and confirmed working — also in docs/SWAP_STATUS.md.
+  **Update 2026-09-05:** `graph.py` now imports the real
+  `modules.forecast.forecast_node` (swap applied, not just verified
+  compatible) — `python graph.py` and the full `/run → /approve reject →
+  /run` HTTP sequence were both re-run against it and pass. **Still, the
+  module-swap half of this step's "done when" line ("at least two real
+  modules are swapped in") is NOT yet met — 1 of 4 nodes is real** (see
+  [docs/SWAP_STATUS.md](docs/SWAP_STATUS.md)). The swap seam itself (does
+  the graph fail loudly on a malformed swapped node?) was tested and
+  confirmed working — also in docs/SWAP_STATUS.md.
 
 - [~] **Step 5 — The trace panel.** `static/index.html` exists, is served
   by `server.py` at `/`, uses no external CDN/fonts, and its CSS was
@@ -82,7 +86,12 @@ code (see the "Done when" evidence under each item), not by prior claims.
   Evidence: 24 days of entirely self-reported data (`precision: 0.4`)
   asserted to *not* return `HIGH` confidence (returns `LOW`, since 0.4 is
   below the `MEDIUM_CONFIDENCE_PRECISION = 0.5` floor). 28 days of
-  partner-statement data (`precision: 1.0`) returns `HIGH`.
+  partner-statement data (`precision: 1.0`) prints `HIGH` in practice, but
+  the code's own assertion is deliberately looser
+  (`confidence in ("HIGH", "MEDIUM")`) with a comment explaining why: some
+  cells in the synthetic data legitimately land `UNKNOWN` depending on
+  gap timing, which can cap confidence at `MEDIUM` even with clean data —
+  a defensible call, just worth stating precisely rather than as "always HIGH."
 
 - [x] **Step 5 — Trace + full assert suite.**
   Evidence: `python modules/forecast.py` prints `ALL FORECAST TESTS PASSED`.
@@ -91,8 +100,7 @@ code (see the "Done when" evidence under each item), not by prior claims.
   `confidence`, `degraded`), asserted.
   **Also verified beyond the module's own suite:** swapped
   `modules.forecast.forecast_node` into a real (non-stub) LangGraph build
-  of the actual graph topology from `graph.py` (throwaway test script, not
-  committed) — the graph ran end to end, hit `MAX_REPLAN_LOOPS`, and
+  of the actual graph topology from `graph.py` — the graph ran end to end, hit `MAX_REPLAN_LOOPS`, and
   reached `END` without raising. Confirms the real module's output shape
   is fully compatible with `route_after_forecast` and the rest of the
   routing logic, not just with its own standalone tests.
@@ -106,12 +114,13 @@ code (see the "Done when" evidence under each item), not by prior claims.
 
 ## §13 Status Summary
 
-**Update 2026-09-05 (later):** `modules/forecast.py` (Member 2) now exists
-and is real — `modules/` is no longer empty. `graph.py` itself is
-unchanged (still imports the stub); the real module was verified against
-the actual graph topology via a throwaway (uncommitted) test script, per
-§7.2 Step 5. `data/` is still empty; `modules/ingestion.py`,
-`modules/materiality.py`, `modules/planner.py` still don't exist.
+**Update 2026-09-05 (later):** `modules/forecast.py` (Member 2) now exists,
+is real, and is **swapped into `graph.py`** (`from modules.forecast import
+forecast_node`, replacing the stub import) — verified end-to-end via
+`python graph.py` and the full `/run → /approve reject → /run` HTTP
+sequence, both re-run against the live swap. `data/` is still empty;
+`modules/ingestion.py`, `modules/materiality.py`, `modules/planner.py`
+still don't exist.
 
 | Area | Status | Notes |
 |---|---|---|
@@ -120,9 +129,9 @@ the actual graph topology via a throwaway (uncommitted) test script, per
 | Persistence | ✅ Done | Verified across HTTP calls, not just in-process. |
 | API surface (`server.py`) | ✅ Done | All 6 endpoints verified, never returns a 500. |
 | Trace panel (`static/index.html`) | ⚠️ Built, not browser-verified | CSS spec compliance confirmed via grep only. |
-| `modules/forecast.py` (Member 2) | ✅ Done | All 5 steps verified — see §7.2. `ALL FORECAST TESTS PASSED`. Not yet swapped into `graph.py` itself (that one-line edit is Member 1's per docs/SWAP_STATUS.md). |
+| `modules/forecast.py` (Member 2) | ✅ Done | All 5 steps verified — see §7.2. `ALL FORECAST TESTS PASSED`. Swapped into `graph.py` and verified end-to-end (see docs/SWAP_STATUS.md). |
 | `modules/ingestion.py`, `data/benchmarks.json` (Member 3) | ❌ Not started | |
 | `modules/materiality.py`, `modules/planner.py` (Member 4) | ❌ Not started | |
-| Module swap-in | ⚠️ 0 of 4 nodes swapped into `graph.py` | `modules/forecast.py` exists and is graph-compatible (verified) but `graph.py`'s import line is untouched — see docs/SWAP_STATUS.md. |
+| Module swap-in | ⚠️ 1 of 4 nodes swapped into `graph.py` | `forecast` is real and live in `graph.py`. Need 1 more (ingestion/gate/planner) to clear the handbook's "2+" bar — see docs/SWAP_STATUS.md. |
 | AWS Bedrock / SSO credentials | ❓ Unverified | `/health` reports `bedrock: false` in this environment — nobody has confirmed whether `aws sso login --profile workshop` has been run by any teammate. |
 | Flagship "3 properties in 15 seconds" demo (§4) | ✅ Fully provable on stubs | Verified 2026-09-05: reject → different plan proposed, with a trace record naming the excluded plan and constraint. Real `planner.py` still needs the same check (documented in docs/SWAP_STATUS.md). |

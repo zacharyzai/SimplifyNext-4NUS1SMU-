@@ -16,13 +16,17 @@ Three routing decisions turn the pipeline into an agent:
     graph (interrupt_before=["execute_node"]) until Bob approves it.
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
 from shared.schema import CashFlowState, MAX_REPLAN_LOOPS, TIER_APPROVAL
-from stubs import ingestion_node, forecast_node, gate_node, planner_node
+from stubs import ingestion_node, gate_node, planner_node
+# from stubs import forecast_node  # SWAPPED OUT 2026-09-05 -- kept here as the
+# fallback import; uncomment this and comment out the real import below if
+# modules/forecast.py ever regresses and blocks the demo.
+from modules.forecast import forecast_node  # Member 2's real forecast engine (docs/SWAP_STATUS.md)
 
 
 def _now_iso() -> str:
@@ -227,14 +231,26 @@ if __name__ == "__main__":
     assert "never touch the phone bill" in state_2["user_constraints"]
     print("   Constraint survived across two invocations:", state_2["user_constraints"])
 
-    # --- Demo (a): LOW confidence triggers the replan cycle once -----------
+    # --- Demo (a): sub-HIGH confidence triggers the bounded replan cycle ----
+    # NOTE: exactly how many loops fire depends on whether forecast_node is
+    # the stub (scripted to reach HIGH after exactly 1 loop) or the real
+    # modules/forecast.py (which stays at whatever confidence the data
+    # actually supports -- with ingestion still a stub that never
+    # incorporates clarify_node's answers, that means it correctly runs to
+    # the MAX_REPLAN_LOOPS ceiling instead of "resolving" after one pass).
+    # Either way the invariant that matters is: it looped at least once,
+    # and it never exceeded the ceiling.
     print("\n=== Demo (a): replanning loop (default scenario -> TIER_NOTIFY) ===")
     state_a = run_agent(user_id="bob-001", thread_id="bob-demo-a")
     _print_trace(state_a)
-    assert state_a["loop_count"] == 1, "expected exactly one replan loop"
+    assert 1 <= state_a["loop_count"] <= MAX_REPLAN_LOOPS, (
+        f"expected the replan loop to fire at least once and never exceed "
+        f"the {MAX_REPLAN_LOOPS} ceiling, got loop_count={state_a['loop_count']}"
+    )
     assert not state_a.get("awaiting_approval", False)
-    print(f"   Path: forecast(LOW) -> clarify -> ingestion -> forecast(HIGH) -> gate -> planner -> END")
-    print(f"   loop_count={state_a['loop_count']}, tier_level={state_a['tier_level']}")
+    print(f"   Path: forecast(<HIGH) -> clarify -> ingestion -> forecast(...) -> "
+          f"[repeat until HIGH or ceiling] -> gate -> planner -> END")
+    print(f"   loop_count={state_a['loop_count']} (ceiling={MAX_REPLAN_LOOPS}), tier_level={state_a['tier_level']}")
 
     # --- Demo (b): the gate does not fire -> ends early in silence ---------
     print("\n=== Demo (b): materiality gate stays silent ===")
