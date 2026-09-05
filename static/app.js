@@ -49,11 +49,6 @@
     return res.json();
   }
 
-  async function getJSON(url) {
-    const res = await fetch(url);
-    return res.json();
-  }
-
   function renderConversation(data) {
     const s = data.state_summary || {};
     let html = "";
@@ -169,11 +164,6 @@
     } catch (err) {
       setStatus(`Network error: ${err}`);
     }
-  }
-
-  async function refreshTrace() {
-    const data = await getJSON(`/trace/${encodeURIComponent(currentThreadId())}`);
-    if (data.ok) renderTrace(data.trace);
   }
 
   els.btnRun.addEventListener("click", () => runAgent("Run agent"));
