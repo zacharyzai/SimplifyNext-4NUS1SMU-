@@ -1,0 +1,86 @@
+# SWAP_STATUS.md — module swap-in status
+
+Checked against actual files on disk (`find . -name "*.py"`, `ls modules/`)
+on 2026-09-05. **`modules/` and `data/` are both empty directories.** No
+real teammate module exists yet.
+
+| Node in graph.py | Real module on disk? | Currently imports from |
+|---|---|---|
+| `ingestion` | ❌ `modules/ingestion.py` does not exist | `stubs.ingestion_node` |
+| `forecast` | ❌ `modules/forecast.py` does not exist | `stubs.forecast_node` |
+| `gate` | ❌ `modules/materiality.py` does not exist | `stubs.gate_node` |
+| `planner` | ❌ `modules/planner.py` does not exist | `stubs.planner_node` |
+
+**0 of 4 nodes are real. The handbook's Step 4 "done when" criterion
+("at least two real modules are swapped in") is NOT met.** This file
+exists instead of a fabricated pass — see server.py's swap-in comment
+block, reproduced below, for the exact change each swap needs once the
+real files land.
+
+## Exact one-line import change per node (from server.py's swap notes)
+
+```python
+# graph.py line 25 currently:
+from stubs import ingestion_node, forecast_node, gate_node, planner_node
+
+# Member 2 (forecast) lands:
+from modules.forecast import forecast_node
+
+# Member 3 (ingestion) lands (needs a thin ingestion_node(state) wrapper
+# around ingestion.py's real functions -- same shape stubs.py uses):
+from modules.ingestion import ingestion_node
+
+# Member 4 (materiality/gate) lands:
+from modules.materiality import gate_node
+
+# Member 4 (planner) lands:
+from modules.planner import planner_node
+```
+
+Each import is independent — swap them in one at a time as each teammate
+finishes, keeping the corresponding stub import as a fallback (comment it
+out rather than delete it) so a late or broken module never blocks the
+demo. Recompile is automatic; nothing else in `graph.py` needs to change
+because every stub already returns the exact dict shape `shared/schema.py`
+defines.
+
+## Swap seam verified (2026-09-05)
+
+Tested with a deliberately broken stand-in for `forecast_node` that omits
+the required `"forecast"` key from its return dict — simulating a real
+module shipped with a bug. Result:
+
+```
+Invoking graph with a broken forecast_node (missing 'forecast' key)...
+CAUGHT LOUDLY AND SPECIFICALLY: KeyError: 'forecast'
+This is exactly what should happen -- route_after_forecast tried to read
+state['forecast']['confidence'], but the swapped-in node never set 'forecast'.
+```
+
+The graph does **not** silently swallow a malformed module's output — it
+raises immediately and specifically at the point the missing key is first
+read (inside `route_after_forecast`), which is the earliest possible
+failure point given LangGraph does not itself validate `TypedDict` shapes
+at runtime. This means a teammate's broken module will fail fast and
+loudly during integration testing rather than producing a plausible-looking
+but wrong result three nodes downstream.
+
+**Caveat:** this only catches a *missing* key being read by name. A module
+that returns the wrong *type* for a present key (e.g. `forecast` as a
+string instead of a dict) will fail at whatever point downstream code
+first tries to use it as the wrong type — also loud, but not necessarily
+at the earliest possible node. There is no schema validation layer
+(e.g. pydantic) enforcing the full `CashFlowState` shape on every write;
+the contract is enforced by convention (Rules Sheet #6/#9) and by each
+node's own return-shape discipline, not by the graph itself.
+
+## Also true right now
+
+- `data/benchmarks.json` does not exist (Member 3, ingestion step 3).
+- The handbook's flagship "three properties in fifteen seconds" demo
+  (§4 — reject a plan, run again, agent skips it and cites the constraint)
+  is only *partially* provable today: persistence and the approval/
+  rejection mechanism work (verified — see conversation log), but nothing
+  currently reads `user_constraints` before choosing a plan, so the agent
+  will re-propose a rejected action on the next run. That check belongs in
+  the real `modules/planner.py`, not in a stub.

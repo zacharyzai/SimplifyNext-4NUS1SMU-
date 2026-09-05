@@ -47,12 +47,20 @@ authoritative "what are we building and is it done" answer, see
 - The materiality gate is the core differentiator, not the forecast — resist the urge to over-invest in forecasting precision at the expense of the "stay silent unless it matters" logic.
 - `MAX_REPLAN_LOOPS` (currently 2) hard-caps the low-confidence replanning cycle; a module that keeps returning low confidence will hit this ceiling and must degrade gracefully rather than loop forever.
 
-## Links
+## Governance docs (imported below, so this context is always loaded)
 
-- [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) — one-page agent spec (purpose, permission boundaries, state schema, data sources, failure modes)
-- [permission_boundaries.md](permission_boundaries.md) — table-driven permission spec
-- [data_source_registry.md](data_source_registry.md) — truth registry for every data source the agent touches
-- [failure_mode_playbook.md](failure_mode_playbook.md) — pre-written recovery paths per tool
-- [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md) — per-feature completion checklist
+- `docs/SYSTEM_DESIGN.md` — one-page agent spec (purpose, permission boundaries, state schema, data sources, failure modes)
+- `docs/permission_boundaries.md` — table-driven permission spec
+- `docs/data_source_registry.md` — truth registry for every data source the agent touches
+- `docs/failure_mode_playbook.md` — pre-written recovery paths per tool
+- `docs/DEFINITION_OF_DONE.md` — per-feature completion checklist
+- `docs/SWAP_STATUS.md` — which graph.py nodes are real modules vs. stubs, updated as teammates land code
 - `README.md` — setup and run instructions
-- `HACKATHON_OBJECTIVES.md` (TODO: create) — single source of truth for scope and checkpoints
+- `HACKATHON_OBJECTIVES.md` — single source of truth for scope, per-step status, and checkpoints (§7.1, §13)
+
+@docs/SYSTEM_DESIGN.md
+@docs/permission_boundaries.md
+@docs/data_source_registry.md
+@docs/failure_mode_playbook.md
+@docs/DEFINITION_OF_DONE.md
+@docs/SWAP_STATUS.md

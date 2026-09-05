@@ -29,7 +29,7 @@ router always resolves to the higher (more restrictive) tier.
 ## State schema
 
 Canonical definition: `shared/schema.py` → `CashFlowState` (TypedDict).
-Mirrored/extended for tracing purposes in [state_schema.py](state_schema.py).
+Mirrored/extended for tracing purposes in [state_schema.py](../state_schema.py).
 Persists across sessions via the LangGraph checkpointer, keyed by thread id
 (e.g. `"bob-001"`).
 

@@ -54,7 +54,7 @@ class AgentRunState(TypedDict):
 
     # The permission tier this run is currently operating under.
     # Drawn at "is this reversible and is the blast radius small?" -- see
-    # SYSTEM_DESIGN.md. Defaults to the most restrictive tier until a
+    # docs/SYSTEM_DESIGN.md. Defaults to the most restrictive tier until a
     # materiality/tiering decision says otherwise.
     permission_level: PermissionLevel
 
@@ -82,7 +82,7 @@ def new_run_state(session_id: str, user_id: str) -> AgentRunState:
     return {
         "session_id": session_id,
         "user_id": user_id,
-        "permission_level": "approval",  # cautious default -- see SYSTEM_DESIGN.md
+        "permission_level": "approval",  # cautious default -- see docs/SYSTEM_DESIGN.md
         "last_decision": "",
         "data_sources_checked": [],
         "errors_encountered": [],
