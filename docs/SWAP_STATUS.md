@@ -1,21 +1,28 @@
 # SWAP_STATUS.md — module swap-in status
 
-Checked against actual files on disk (`find . -name "*.py"`, `ls modules/`)
-on 2026-09-05. **`modules/` and `data/` are both empty directories.** No
-real teammate module exists yet.
+**Update 2026-09-05:** `modules/forecast.py` (Member 2) now exists and is
+real — `python modules/forecast.py` prints `ALL FORECAST TESTS PASSED`,
+and it was additionally verified against the actual graph topology from
+`graph.py` (a throwaway, uncommitted test script built the real
+`StateGraph` with `modules.forecast.forecast_node` swapped in for the
+stub; the graph ran end to end, exercised the replan loop up to
+`MAX_REPLAN_LOOPS`, and reached `END` without raising). **`graph.py`
+itself has not been edited** — the one-line import swap below is still
+outstanding.
 
 | Node in graph.py | Real module on disk? | Currently imports from |
 |---|---|---|
 | `ingestion` | ❌ `modules/ingestion.py` does not exist | `stubs.ingestion_node` |
-| `forecast` | ❌ `modules/forecast.py` does not exist | `stubs.forecast_node` |
+| `forecast` | ✅ `modules/forecast.py` exists, tests pass, graph-compatibility verified | `stubs.forecast_node` (swap not yet applied in `graph.py`) |
 | `gate` | ❌ `modules/materiality.py` does not exist | `stubs.gate_node` |
 | `planner` | ❌ `modules/planner.py` does not exist | `stubs.planner_node` |
 
-**0 of 4 nodes are real. The handbook's Step 4 "done when" criterion
-("at least two real modules are swapped in") is NOT met.** This file
-exists instead of a fabricated pass — see server.py's swap-in comment
-block, reproduced below, for the exact change each swap needs once the
-real files land.
+**0 of 4 nodes are swapped into `graph.py` itself yet** (1 of 4 real
+modules exists and is ready to swap). The handbook's Step 4 "done when"
+criterion ("at least two real modules are swapped in") is still NOT met.
+This file exists instead of a fabricated pass — see server.py's swap-in
+comment block, reproduced below, for the exact change each swap needs
+once the real files land.
 
 ## Exact one-line import change per node (from server.py's swap notes)
 

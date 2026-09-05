@@ -105,9 +105,10 @@ Build not yet complete — see `HACKATHON_OBJECTIVES.md` §13 (Status Summary)
 for the live checkpoint tracker. As of now:
 
 - [x] `shared/schema.py`, `shared/money.py`, `shared/resilience.py` — written, frozen, tests pass.
-- [ ] `graph.py` / `stubs.py` — graph skeleton on stubs + persistence.
-- [ ] `server.py`, `static/index.html`.
-- [ ] `modules/forecast.py`, `modules/ingestion.py`, `modules/materiality.py`, `modules/planner.py`, `data/benchmarks.json`.
+- [x] `graph.py` / `stubs.py` — graph skeleton on stubs + persistence.
+- [x] `server.py`, `static/index.html`.
+- [x] `modules/forecast.py` — deterministic forecast engine, `ALL FORECAST TESTS PASSED`. Not yet swapped into `graph.py` (see `docs/SWAP_STATUS.md`).
+- [ ] `modules/ingestion.py`, `modules/materiality.py`, `modules/planner.py`, `data/benchmarks.json`.
 
 ## Non-negotiable rules (see `HACKATHON_OBJECTIVES.md` §4 for the full list)
 

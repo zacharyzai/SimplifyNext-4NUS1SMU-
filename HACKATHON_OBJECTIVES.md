@@ -57,12 +57,61 @@ code (see the "Done when" evidence under each item), not by prior claims.
   the first plan. See docs/SWAP_STATUS.md for the full transcript and the
   matching requirement now written down for Member 4's real `planner.py`.
 
+## §7.2 Member 2's 5 steps — deterministic forecast engine
+
+- [x] **Step 1 — Daily totals + earnings profile.**
+  Evidence: `python modules/forecast.py` builds 28 synthetic days,
+  `compute_daily_totals` returns all 28, and `earnings_profile` reports
+  `volatility_ratio: 0.085` — plausible (bounded strictly between 0 and 1,
+  asserted).
+
+- [x] **Step 2 — Cell profile + UNKNOWN rule.**
+  Evidence: a fixture with exactly 2 same-weekday Grab-dinner rows produces
+  one `(platform, weekday, time_block)` cell with
+  `{"status": "UNKNOWN", "median_net_per_hour_cents": None, "observations": 2}`
+  — asserted, never backfilled with an overall average.
+
+- [x] **Step 3 — Projection + pessimistic stress case.**
+  Evidence: `run_forecast()` called twice on identical input returns
+  byte-identical `forecast` dicts (asserted equal) — no wall-clock or
+  randomness inside the projection loop. The 14-day table prints with a
+  shortfall date, and the pessimistic (60%-haircut) scenario's shortfall
+  is asserted to be at least as large as the baseline's.
+
+- [x] **Step 4 — Provenance-weighted confidence + gap detection.**
+  Evidence: 24 days of entirely self-reported data (`precision: 0.4`)
+  asserted to *not* return `HIGH` confidence (returns `LOW`, since 0.4 is
+  below the `MEDIUM_CONFIDENCE_PRECISION = 0.5` floor). 28 days of
+  partner-statement data (`precision: 1.0`) returns `HIGH`.
+
+- [x] **Step 5 — Trace + full assert suite.**
+  Evidence: `python modules/forecast.py` prints `ALL FORECAST TESTS PASSED`.
+  `grep -c boto3 modules/forecast.py` returns 0. Every trace record carries
+  all 7 required fields (`node`, `ts`, `checked`, `found`, `concluded`,
+  `confidence`, `degraded`), asserted.
+  **Also verified beyond the module's own suite:** swapped
+  `modules.forecast.forecast_node` into a real (non-stub) LangGraph build
+  of the actual graph topology from `graph.py` (throwaway test script, not
+  committed) — the graph ran end to end, hit `MAX_REPLAN_LOOPS`, and
+  reached `END` without raising. Confirms the real module's output shape
+  is fully compatible with `route_after_forecast` and the rest of the
+  routing logic, not just with its own standalone tests.
+  **Known scope note:** `CashFlowState` carries no wallet-balance or bill
+  fields, and no upstream module supplies one, so the 14-day projection
+  uses a small, clearly-labelled synthetic scenario
+  (`DEMO_STARTING_BALANCE_CENTS`, `DEMO_BILLS` at the top of
+  `modules/forecast.py`) rather than fabricating a number under a
+  different name. Flagged here so it's disclosed as synthetic in the
+  deliverables (§9), not mistaken for real Bob data.
+
 ## §13 Status Summary
 
-**No real teammate module exists yet.** `modules/` and `data/` are empty
-directories — confirmed via `find . -name "*.py"` and `ls modules/ data/`
-on 2026-09-05. `graph.py` imports all four nodes from `stubs.py`
-(`from stubs import ingestion_node, forecast_node, gate_node, planner_node`).
+**Update 2026-09-05 (later):** `modules/forecast.py` (Member 2) now exists
+and is real — `modules/` is no longer empty. `graph.py` itself is
+unchanged (still imports the stub); the real module was verified against
+the actual graph topology via a throwaway (uncommitted) test script, per
+§7.2 Step 5. `data/` is still empty; `modules/ingestion.py`,
+`modules/materiality.py`, `modules/planner.py` still don't exist.
 
 | Area | Status | Notes |
 |---|---|---|
@@ -71,9 +120,9 @@ on 2026-09-05. `graph.py` imports all four nodes from `stubs.py`
 | Persistence | ✅ Done | Verified across HTTP calls, not just in-process. |
 | API surface (`server.py`) | ✅ Done | All 6 endpoints verified, never returns a 500. |
 | Trace panel (`static/index.html`) | ⚠️ Built, not browser-verified | CSS spec compliance confirmed via grep only. |
-| `modules/forecast.py` (Member 2) | ❌ Not started | |
+| `modules/forecast.py` (Member 2) | ✅ Done | All 5 steps verified — see §7.2. `ALL FORECAST TESTS PASSED`. Not yet swapped into `graph.py` itself (that one-line edit is Member 1's per docs/SWAP_STATUS.md). |
 | `modules/ingestion.py`, `data/benchmarks.json` (Member 3) | ❌ Not started | |
 | `modules/materiality.py`, `modules/planner.py` (Member 4) | ❌ Not started | |
-| Module swap-in | ❌ 0 of 4 nodes real | See docs/SWAP_STATUS.md. Seam tested and works. |
+| Module swap-in | ⚠️ 0 of 4 nodes swapped into `graph.py` | `modules/forecast.py` exists and is graph-compatible (verified) but `graph.py`'s import line is untouched — see docs/SWAP_STATUS.md. |
 | AWS Bedrock / SSO credentials | ❓ Unverified | `/health` reports `bedrock: false` in this environment — nobody has confirmed whether `aws sso login --profile workshop` has been run by any teammate. |
 | Flagship "3 properties in 15 seconds" demo (§4) | ✅ Fully provable on stubs | Verified 2026-09-05: reject → different plan proposed, with a trace record naming the excluded plan and constraint. Real `planner.py` still needs the same check (documented in docs/SWAP_STATUS.md). |
