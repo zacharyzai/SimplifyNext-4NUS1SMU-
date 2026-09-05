@@ -77,10 +77,42 @@ node's own return-shape discipline, not by the graph itself.
 ## Also true right now
 
 - `data/benchmarks.json` does not exist (Member 3, ingestion step 3).
-- The handbook's flagship "three properties in fifteen seconds" demo
-  (§4 — reject a plan, run again, agent skips it and cites the constraint)
-  is only *partially* provable today: persistence and the approval/
-  rejection mechanism work (verified — see conversation log), but nothing
-  currently reads `user_constraints` before choosing a plan, so the agent
-  will re-propose a rejected action on the next run. That check belongs in
-  the real `modules/planner.py`, not in a stub.
+- **Fixed 2026-09-05:** `stubs.py`'s `planner_node` now checks
+  `state["user_constraints"]` before choosing a plan, so the flagship
+  "three properties in fifteen seconds" demo (§4 — reject a plan, run
+  again, agent proposes something else and cites the constraint) is fully
+  provable end to end. Verified over real HTTP, same server process:
+  Run 1 on a fresh thread proposed `defer_phone_bill`; rejecting it via
+  `POST /approve {"approved": false}` stored the constraint
+  `"never defer the phone bill by 3 days"`; Run 2 on the same thread
+  proposed `pause_streaming_subscription` instead, with a trace record
+  reading `"Rejected plan defer_phone_bill: violates stored constraint
+  'never defer the phone bill by 3 days'."` If every candidate is excluded,
+  it falls through to `chosen_plan: None`, `tier_level: TIER_NOTIFY` — also
+  verified directly against `planner_node`.
+
+### Requirement for Member 4's real `modules/planner.py`
+
+This is not stub-only behaviour — **the real planner must do the same
+check.** Before returning `chosen_plan`, it must:
+1. Read `state.get("user_constraints", [])`.
+2. Reject any candidate play whose action conflicts with a stored
+   constraint (append it to `rejected_plans` with reason `"user_constraint"`,
+   not `"insufficient_history"` or `"not_applicable"`).
+3. Append a trace entry naming the rejected play and the exact constraint
+   text that excluded it (e.g. `"Rejected plan X: violates stored
+   constraint '...'"`)  — this is what lets the trace panel show the
+   rejection was reasoned, not silent.
+4. If no candidate survives, return `chosen_plan: None` (explicitly, not
+   omitted — omitting the key leaves a stale plan from a previous run on
+   the same thread checkpointed) and downgrade to `TIER_NOTIFY` rather than
+   halting for approval on a plan that no longer exists.
+
+**Known limitation to carry forward, not silently fix:** the stub's
+constraint matching is exact whole-word overlap after stripping a small
+stopword list — no stemming, no synonym handling. `"never touch
+subscriptions"` will **not** exclude a plan whose description says
+"subscription" (singular). A real implementation should decide
+deliberately whether to add stemming/lemmatization or move to matching on
+a structured field (e.g. `action_type` + a target entity id) rather than
+free text, instead of inheriting this gap by accident.

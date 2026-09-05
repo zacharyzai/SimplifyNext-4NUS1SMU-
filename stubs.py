@@ -188,44 +188,138 @@ def gate_node(state: CashFlowState) -> Dict[str, Any]:
     }
 
 
+# Words too generic to count as the "subject" of a constraint -- e.g. in
+# "never touch the phone bill", the constraint's actual subject is {"phone",
+# "bill"}, not "never"/"touch"/"the". A real planner.py would presumably
+# parse this more carefully; the stub only needs to demonstrate the ROUTING
+# behaviour (a stored constraint actually changes which plan gets chosen).
+_CONSTRAINT_STOPWORDS = {
+    "never", "touch", "the", "a", "an", "do", "not", "don't", "dont",
+    "touching", "please", "always", "avoid", "no", "my", "again",
+}
+
+
+def _constraint_excludes_plan(constraint: str, plan: Dict[str, Any]) -> bool:
+    """True if `constraint` (a stored user_constraints string) rules out
+    `plan`. Simple keyword overlap: strip stopwords out of the constraint,
+    then check whether any remaining WORD (exact token match, not
+    substring) also appears in the plan's name/description. Good enough
+    for a stub; a real planner.py would want something more structured
+    (e.g. matching on action_type + a target entity rather than free text).
+
+    Whole-word matching matters here: a substring check on "bill" would
+    also match inside "billing", wrongly excluding an unrelated plan whose
+    description happens to mention a billing cycle for something else
+    entirely.
+    """
+    subject_words = {
+        w for w in constraint.lower().replace("'", " ").split()
+        if w not in _CONSTRAINT_STOPWORDS and len(w) > 2
+    }
+    plan_text = f"{plan.get('name', '')} {plan.get('description', '')}".lower()
+    plan_words = set(plan_text.replace(",", " ").split())
+    return bool(subject_words & plan_words)
+
+
 def planner_node(state: CashFlowState) -> Dict[str, Any]:
     """STUB for Member 4's modules/planner.py. Writes candidate_plans, rejected_plans, chosen_plan, explanation.
+
+    Checks state["user_constraints"] against each candidate BEFORE choosing
+    one -- a plan whose action matches a stored constraint is rejected, not
+    silently proposed again. This is what makes the persistence demo prove
+    a behaviour change, not just storage: rejecting "never touch the phone
+    bill" on run 1 must change what run 2 proposes on the same thread.
 
     Also sets awaiting_approval from tier_level: this is the flag graph.py's
     interrupt_before pause on execute_node surfaces to a caller, so a
     Tier 2 action halts visibly rather than silently.
     """
-    candidate_plans = [
+    all_candidates = [
         {"id": "defer_phone_bill", "name": "Defer the phone bill by 3 days",
          "description": "defer the phone bill by 3 days",
          "impact_cents": 4500, "effort": 1, "reversible": False,
          "affects_third_party": True, "action_type": "request_deferral",
          "closes_gap": False, "score": 42.0,
          "why": "STUB placeholder plan.", "evidence": "STUB evidence."},
+        {"id": "pause_streaming_subscription", "name": "Pause the streaming subscription for one cycle",
+         "description": "pause the streaming subscription for one billing cycle",
+         "impact_cents": 1800, "effort": 1, "reversible": True,
+         "affects_third_party": False, "action_type": "pause_subscription",
+         "closes_gap": False, "score": 30.0,
+         "why": "STUB placeholder plan.", "evidence": "STUB evidence."},
     ]
+    user_constraints = state.get("user_constraints", [])
+
+    candidate_plans = []
     rejected_plans = [
         {"id": "work_sunday_dinner", "reason": "insufficient_history"},
     ]
-    chosen_plan = candidate_plans[0]
-    explanation = (
-        "STUB: Based on a placeholder forecast, a $112.00 shortfall is expected "
-        "around 2026-09-13. Deferring the phone bill by 3 days would close it."
-    )
-    awaiting_approval = state.get("tier_level") == TIER_APPROVAL
+    constraint_trace_lines = []
+
+    for plan in all_candidates:
+        violated_by = next(
+            (c for c in user_constraints if _constraint_excludes_plan(c, plan)),
+            None,
+        )
+        if violated_by is not None:
+            rejected_plans.append({"id": plan["id"], "reason": "user_constraint"})
+            constraint_trace_lines.append(
+                f"Rejected plan {plan['id']}: violates stored constraint '{violated_by}'."
+            )
+        else:
+            candidate_plans.append(plan)
+
+    if candidate_plans:
+        chosen_plan = candidate_plans[0]
+        explanation = (
+            f"STUB: Based on a placeholder forecast, a $112.00 shortfall is expected "
+            f"around 2026-09-13. {chosen_plan['name']} would close it."
+        )
+        tier_level = state.get("tier_level")
+        awaiting_approval = tier_level == TIER_APPROVAL
+        concluded = f"Chose to propose: {chosen_plan['name']} (STUB)."
+        if constraint_trace_lines:
+            concluded += " " + " ".join(constraint_trace_lines)
+        if awaiting_approval:
+            concluded += " Halting for approval before acting."
+    else:
+        # Every candidate was excluded by a stored constraint. Nothing left
+        # to propose -- fall through to a TIER_NOTIFY "can't help right now"
+        # outcome rather than silently defaulting to some other plan Bob
+        # never agreed to, or re-proposing a rejected one.
+        chosen_plan = None
+        tier_level = TIER_NOTIFY
+        awaiting_approval = False
+        explanation = (
+            "STUB: A $112.00 shortfall is expected around 2026-09-13, but every "
+            "candidate plan conflicts with a constraint you've set. I don't have "
+            "a plan to propose that respects your constraints."
+        )
+        concluded = (
+            "No valid plan: every candidate was excluded by a stored constraint. "
+            + " ".join(constraint_trace_lines)
+        )
+
     trace = _trace(
         node="planner_node (STUB)",
-        checked=["stub play library (2 plays evaluated)"],
-        found={"candidates": 1, "rejected": 1},
-        concluded="Chose to propose deferring the phone bill (STUB)."
-        + (" Halting for approval before acting." if awaiting_approval else ""),
+        checked=[f"stub play library ({len(all_candidates)} plays evaluated)"] + constraint_trace_lines,
+        found={"candidates": len(candidate_plans), "rejected": len(rejected_plans)},
+        concluded=concluded,
         confidence="MEDIUM",
-        degraded=False,
+        degraded=(chosen_plan is None),
     )
+
     return {
         "candidate_plans": candidate_plans,
         "rejected_plans": rejected_plans,
+        # Explicitly set even when None: chosen_plan has no reducer, so on
+        # the same thread a run that finds no valid plan must overwrite a
+        # PREVIOUS run's chosen_plan rather than silently leaving it
+        # checkpointed (last-write-wins means omitting the key here would
+        # let a stale plan from an earlier run keep showing as "chosen").
         "chosen_plan": chosen_plan,
         "explanation": explanation,
+        "tier_level": tier_level,
         "awaiting_approval": awaiting_approval,
         "trace": [trace],
     }

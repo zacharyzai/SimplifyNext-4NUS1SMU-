@@ -43,14 +43,19 @@ code (see the "Done when" evidence under each item), not by prior claims.
   grey style, and a `.trace-card.degraded` amber left border.
   The two-run persistence-and-rejection sequence was timed end-to-end over
   real HTTP at **190ms**, well under the 15-second criterion.
-  **Marked [~] not [x] because:** (1) the page has not actually been opened
+  **Marked [~] not [x] because:** the page has not actually been opened
   in a browser / on a projector — "renders legibly at 3 metres" is
-  unverified, only its CSS declarations are; (2) the handbook's flagship
-  demo this panel is meant to showcase (§4 — reject a plan, run again,
-  agent skips it and cites the constraint) only half-works today: the
-  constraint persists and displays correctly, but the stub planner does not
-  yet check `user_constraints` before proposing, so the same plan gets
-  proposed again. That logic belongs in the real `modules/planner.py`.
+  unverified, only its CSS declarations are.
+  **Update 2026-09-05:** the flagship demo this panel showcases (§4 —
+  reject a plan, run again, agent proposes something else and cites the
+  constraint) is now fully provable — `stubs.py`'s `planner_node` checks
+  `user_constraints` before choosing a plan. Verified over real HTTP,
+  same server process: Run 1 proposed `defer_phone_bill`; rejecting it via
+  `/approve {"approved": false}` stored `"never defer the phone bill by 3
+  days"`; Run 2 on the same thread proposed `pause_streaming_subscription`
+  instead, with a trace record citing the exact constraint that excluded
+  the first plan. See docs/SWAP_STATUS.md for the full transcript and the
+  matching requirement now written down for Member 4's real `planner.py`.
 
 ## §13 Status Summary
 
@@ -71,4 +76,4 @@ on 2026-09-05. `graph.py` imports all four nodes from `stubs.py`
 | `modules/materiality.py`, `modules/planner.py` (Member 4) | ❌ Not started | |
 | Module swap-in | ❌ 0 of 4 nodes real | See docs/SWAP_STATUS.md. Seam tested and works. |
 | AWS Bedrock / SSO credentials | ❓ Unverified | `/health` reports `bedrock: false` in this environment — nobody has confirmed whether `aws sso login --profile workshop` has been run by any teammate. |
-| Flagship "3 properties in 15 seconds" demo (§4) | ⚠️ Partial | Persistence + approval/rejection work; "agent skips rejected play" does not, pending real planner.py. |
+| Flagship "3 properties in 15 seconds" demo (§4) | ✅ Fully provable on stubs | Verified 2026-09-05: reject → different plan proposed, with a trace record naming the excluded plan and constraint. Real `planner.py` still needs the same check (documented in docs/SWAP_STATUS.md). |
