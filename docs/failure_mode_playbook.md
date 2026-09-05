@@ -49,4 +49,30 @@ default (`UNKNOWN` / halt-and-ask) rather than leaving it blank.
 | Duplicate notification risk (same shortfall detected twice across re-runs) | De-duplicate using `trace` history for the thread — check whether an equivalent `notify_shortfall` decision was already logged for this event before sending again. |
 | Notification channel itself fails (e.g. server/socket error in `server.py`) | Log the failed send attempt in `tool_health`; keep the decision in `trace` as "decided but not delivered" so it surfaces in the trace panel and can be manually resent. |
 
+## `hallucination` (cross-cutting — every point an LLM touches transcription or narration)
+
+**Expected output:** a transcribed record or a narrated explanation that
+faithfully restates figures already computed by deterministic Python,
+with zero new numbers, totals, or estimates introduced by the model.
+
+Unlike the tool-specific entries above, this failure mode isn't handled
+by one fallback — it's handled by four layers, each assuming the one
+before it could fail:
+
+| Layer | Defense | What it catches |
+|---|---|---|
+| 1. Scope-fenced prompts | System prompts explicitly forbid totaling, adjusting, estimating, or inferring — the model is told only to transcribe or restate. | Narrows what can go wrong. Does **not** guarantee compliance — a prompt is an instruction, not a constraint. |
+| 2. Recomputation | Every transcribed record is re-validated and its sums re-derived by Python (`normalise_records`), never trusted as given. | A model that transcribes fluently and wrongly — confident, well-formatted, and incorrect. |
+| 3. Grounding refusal at the data layer | `UNKNOWN` cells and the `insufficient_history` rejection rule stop the system from acting on thin evidence, independent of anything the LLM did or didn't do. | Acting on real-but-inadequate data — a different failure than the model inventing data, caught the same way. |
+| 4. Output verification | `render_explanation` checks that every money figure it sent to the model still appears verbatim in the response; any mismatch discards the model's output and falls back to the deterministic template. | A narration pass that silently drops, rounds, or alters a number while sounding fluent. |
+
+**Why layered rather than a single safeguard:** each layer exists on the
+assumption that the previous one can and will fail eventually — Layer 1
+is a request, not a guarantee, so Layer 2 exists for when it's ignored;
+Layer 2 only covers transcription, so Layer 3 exists for when the *input*
+itself is too thin to trust regardless of how faithfully it was
+transcribed; Layer 4 exists because narration is a second, separate LLM
+call that could silently corrupt already-correct numbers on its own. No
+single layer is treated as sufficient on its own.
+
 <!-- TODO: add a table for any new critical tool as modules/planner.py and the live delivery-platform integration land -->

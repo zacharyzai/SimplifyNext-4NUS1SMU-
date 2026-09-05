@@ -27,6 +27,7 @@ authoritative "what are we building and is it done" answer, see
 - FastAPI + uvicorn for the backend API
 - Plain HTML/CSS/JS for the trace-panel demo UI (no build step)
 - AWS Bedrock (optional locally) — model `global.anthropic.claude-haiku-4-5-20251001-v1:0`, region `ap-southeast-1`, profile `workshop`
+- LLM access goes through `shared/llm.py` — one call surface for both providers, switched via `LLM_PROVIDER=bedrock|gemini|none`. Gemini (`google-genai` SDK, API key from Google AI Studio, not Cloud Console) is used for local development; Bedrock is the submission target. No other module should call `boto3` or `google-genai` directly.
 - <!-- TODO: add any additional libs (e.g. pandas, pydantic) once modules land -->
 
 ## Known assumptions
@@ -46,6 +47,7 @@ authoritative "what are we building and is it done" answer, see
 - `trace` is the only field in `CashFlowState` with a reducer (`operator.add`); every other field is last-write-wins, so only one module should ever produce a given key per run — don't accidentally have two modules write the same non-trace key.
 - The materiality gate is the core differentiator, not the forecast — resist the urge to over-invest in forecasting precision at the expense of the "stay silent unless it matters" logic.
 - `MAX_REPLAN_LOOPS` (currently 2) hard-caps the low-confidence replanning cycle; a module that keeps returning low confidence will hit this ceiling and must degrade gracefully rather than loop forever.
+- Play scoring uses each cell's 25th-percentile historical figure for `impact_cents`, not the median. The median already has bad nights baked in, so presenting it as expected earnings overstates certainty on demand-dependent gig income — the same failure mode as a hallucinated number, just produced by deterministic code instead of an LLM. The full range is carried separately as `impact_range` so the renderer can state a range instead of a point estimate. **Open gap, not yet confirmed fixed:** `modules/planner.py` does not exist yet (verified 2026-09-05) — flagging this as the intended design for whoever writes it, not as something already implemented. If a future version of that module is found scoring on the median instead, note it as an open gap rather than silently "fixing" it without discussion.
 
 ## Governance docs (imported below, so this context is always loaded)
 

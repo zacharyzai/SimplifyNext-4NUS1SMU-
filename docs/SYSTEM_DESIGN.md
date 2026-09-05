@@ -10,6 +10,35 @@ Forecast income shortfalls for a Singapore gig worker from their own
 earnings history, and speak up only when a shortfall is material — staying
 silent otherwise and asking before doing anything irreversible.
 
+## Agentic properties this system is graded against
+
+Each property exists to prevent one specific failure mode — not as an
+abstract checklist item:
+
+| Property | Failure mode it exists to prevent |
+|---|---|
+| Explicit Permission Boundaries | An irreversible action gets taken without asking. |
+| Grounded & Deterministic | The system states a confidently wrong figure. |
+| High Materiality Threshold | Alert fatigue — Bob learns to ignore every message because most of them didn't matter. |
+| Resilient Replanning | Silent degradation into a plausible-looking but wrong output, instead of surfacing the uncertainty. |
+| Legibility & Tracing | Reasoning nobody can audit, challenge, or replay after the fact. |
+| State Persistence | Bob has to re-explain the same context (constraints, prior decisions) every single session. |
+
+**Control flow is deterministic Python, not LLM-directed.** Routing
+(`route_after_forecast`, `route_after_gate`), the replanning trigger, and
+permission tiering all live in plain conditional Python reading state —
+the model is never asked to decide which edge to take. By Anthropic's own
+distinction between workflows (predefined code paths orchestrating LLM
+calls) and agents (the model dynamically directs its own process), this
+system is architecturally a **workflow** with two narrowly-scoped LLM
+augmentations bolted on — transcription (turning a screenshot into
+structured numbers) and narration (turning an already-made decision into
+a plain-English sentence). That is a deliberate choice appropriate for a
+system reasoning about someone's money, not an autonomy shortfall: the
+places where the model could go wrong are fenced to the two jobs it's
+least dangerous at, and everything that decides or calculates stays
+verifiable, testable Python.
+
 ## Permission boundaries
 
 Full table with examples lives in [permission_boundaries.md](permission_boundaries.md).
