@@ -12,9 +12,9 @@ authoritative "what are we building and is it done" answer, see
 - [x] `shared/schema.py` — `CashFlowState` TypedDict, permission tiers, frozen.
 - [x] `shared/money.py` — integer-cents money handling, tests pass.
 - [x] `shared/resilience.py` — `resilient_call()` / `merge_tool_health()`.
-- [ ] `graph.py` / `stubs.py` — LangGraph skeleton on stubs + checkpointing.
-- [ ] `server.py`, `static/index.html` — FastAPI backend + trace-panel demo UI.
-- [ ] `modules/forecast.py` — deterministic forecast engine (zero LLM calls).
+- [x] `graph.py` / `stubs.py` — LangGraph skeleton on stubs + checkpointing.
+- [x] `server.py`, `static/index.html` — FastAPI backend + trace-panel demo UI (trace panel not yet browser-verified, see HACKATHON_OBJECTIVES.md §7.1 Step 5).
+- [x] `modules/forecast.py` — deterministic forecast engine (zero LLM calls). Tests pass; not yet swapped into `graph.py` (docs/SWAP_STATUS.md).
 - [ ] `modules/ingestion.py` — ingestion & grounding, provenance-weighted.
 - [ ] `modules/materiality.py` — materiality scoring + permission tiering.
 - [ ] `modules/planner.py` — play library + plan selection.
