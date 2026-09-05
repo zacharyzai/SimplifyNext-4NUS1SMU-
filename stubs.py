@@ -15,7 +15,7 @@ every real module must also produce):
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from shared.schema import CashFlowState
+from shared.schema import CashFlowState, TIER_APPROVAL, TIER_NOTIFY
 
 
 def _now_iso() -> str:
@@ -69,30 +69,52 @@ def ingestion_node(state: CashFlowState) -> Dict[str, Any]:
 
 
 def forecast_node(state: CashFlowState) -> Dict[str, Any]:
-    """STUB for Member 2's modules/forecast.py. Writes forecast, cells, data_gaps, open_questions."""
+    """STUB for Member 2's modules/forecast.py. Writes forecast, cells, data_gaps, open_questions.
+
+    Confidence is driven by loop_count so the replanning cycle has something
+    real to demonstrate: the first pass through is LOW (not enough evidence
+    yet), and once clarify_node has asked its questions and looped back,
+    the second pass reports HIGH. A real forecast module derives this from
+    actual data quality (see modules/forecast.py step 4); the stub just
+    needs to exercise the same routing decision.
+    """
+    loop_count = state.get("loop_count", 0)
+    if loop_count == 0:
+        confidence = "LOW"
+        confidence_reason = "STUB: only 2 days of stub history on the first pass."
+        open_questions = ["STUB: You worked Sunday dinner once. Roughly what did you make on that shift?"]
+        cells = {
+            "Grab|5|dinner": {"median_net_per_hour_cents": 1940, "observations": 11, "status": "KNOWN"},
+            "Grab|6|dinner": {"median_net_per_hour_cents": None, "observations": 1, "status": "UNKNOWN"},
+        }
+        data_gaps = [
+            {"platform": "Grab", "weekday": 6, "time_block": "dinner",
+             "observations": 1, "why_it_matters": "STUB: falls inside the next 7 days."},
+        ]
+    else:
+        confidence = "HIGH"
+        confidence_reason = "STUB: confidence raised after the replanning loop answered the outstanding question."
+        open_questions = []
+        cells = {
+            "Grab|5|dinner": {"median_net_per_hour_cents": 1940, "observations": 11, "status": "KNOWN"},
+            "Grab|6|dinner": {"median_net_per_hour_cents": 2100, "observations": 3, "status": "KNOWN"},
+        }
+        data_gaps = []
+
     forecast = {
         "shortfall_date": "2026-09-13",
         "shortfall_amount_cents": 11200,
         "worst_balance_cents": -11200,
-        "confidence": "MEDIUM",
-        "confidence_reason": "STUB: hardcoded placeholder confidence.",
+        "confidence": confidence,
+        "confidence_reason": confidence_reason,
     }
-    cells = {
-        "Grab|5|dinner": {"median_net_per_hour_cents": 1940, "observations": 11, "status": "KNOWN"},
-        "Grab|6|dinner": {"median_net_per_hour_cents": None, "observations": 1, "status": "UNKNOWN"},
-    }
-    data_gaps = [
-        {"platform": "Grab", "weekday": 6, "time_block": "dinner",
-         "observations": 1, "why_it_matters": "STUB: falls inside the next 7 days."},
-    ]
-    open_questions = ["STUB: You worked Sunday dinner once. Roughly what did you make on that shift?"]
     trace = _trace(
         node="forecast_node (STUB)",
-        checked=["stub 2-day earnings history", "stub bill calendar"],
-        found={"median_daily_cents": 6900, "unknown_cells": 1},
-        concluded="Projected a stub shortfall of $112.00 on 2026-09-13.",
-        confidence="MEDIUM",
-        degraded=False,
+        checked=["stub earnings history", "stub bill calendar"],
+        found={"median_daily_cents": 6900, "unknown_cells": len(data_gaps)},
+        concluded=f"Projected a stub shortfall of $112.00 on 2026-09-13 ({confidence} confidence).",
+        confidence=confidence,
+        degraded=(confidence != "HIGH"),
     )
     return {
         "forecast": forecast,
@@ -104,33 +126,78 @@ def forecast_node(state: CashFlowState) -> Dict[str, Any]:
 
 
 def gate_node(state: CashFlowState) -> Dict[str, Any]:
-    """STUB for Member 4's modules/materiality.py (gate half). Writes materiality_flag, tier_level."""
-    materiality_flag = {
-        "fire": True, "score": 68, "signature": "shortfall|2026-09-13|stub",
-        "alert_type": "shortfall",
-        "reasons_for": ["STUB: shortfall exceeds one median daily earning"],
-        "reasons_against": ["STUB: still 8 days of runway before the due date"],
-        "suppressed_by": None,
-    }
+    """STUB for Member 4's modules/materiality.py (gate half). Writes materiality_flag, tier_level.
+
+    Derives a demo scenario from user_id rather than adding an undeclared
+    field to the frozen CashFlowState contract (LangGraph strips any key
+    not declared in the schema before a node ever sees it). This lets
+    graph.py's __main__ drive three different routing paths through the
+    same stub: "notify" (default), "silent", and "approval".
+    """
+    user_id = state.get("user_id", "")
+    if "silent" in user_id:
+        scenario = "silent"
+    elif "approval" in user_id:
+        scenario = "approval"
+    else:
+        scenario = "notify"
+
+    if scenario == "silent":
+        materiality_flag = {
+            "fire": False, "score": 22, "signature": "shortfall|2026-09-13|stub-silent",
+            "alert_type": "shortfall",
+            "reasons_for": ["STUB: shortfall is technically nonzero"],
+            "reasons_against": ["STUB: $18 dip is inside normal weekly variation and resolves by Friday"],
+            "suppressed_by": None,
+        }
+        tier_level = TIER_NOTIFY
+        concluded = "Staying silent: the stub shortfall is inside normal variation, below the materiality threshold."
+    elif scenario == "approval":
+        materiality_flag = {
+            "fire": True, "score": 91, "signature": "shortfall|2026-09-13|stub-approval",
+            "alert_type": "shortfall",
+            "reasons_for": ["STUB: large shortfall with an irreversible third-party action proposed"],
+            "reasons_against": [],
+            "suppressed_by": None,
+        }
+        tier_level = TIER_APPROVAL
+        concluded = "Materiality gate fired and the proposed action requires Bob's approval before it can proceed."
+    else:  # "notify"
+        materiality_flag = {
+            "fire": True, "score": 68, "signature": "shortfall|2026-09-13|stub-notify",
+            "alert_type": "shortfall",
+            "reasons_for": ["STUB: shortfall exceeds one median daily earning"],
+            "reasons_against": ["STUB: still 8 days of runway before the due date"],
+            "suppressed_by": None,
+        }
+        tier_level = TIER_NOTIFY
+        concluded = "Materiality gate fired: stub shortfall of $112.00 is worth flagging."
+
     trace = _trace(
         node="gate_node (STUB)",
         checked=["stub materiality score", "stub cooldown check"],
-        found={"score": 68, "threshold": 55},
-        concluded="Materiality gate fired: stub shortfall of $112.00 is worth flagging.",
+        found={"score": materiality_flag["score"], "threshold": 55},
+        concluded=concluded,
         confidence="HIGH",
         degraded=False,
     )
     return {
         "materiality_flag": materiality_flag,
-        "tier_level": 1,  # TIER_NOTIFY
+        "tier_level": tier_level,
         "trace": [trace],
     }
 
 
 def planner_node(state: CashFlowState) -> Dict[str, Any]:
-    """STUB for Member 4's modules/planner.py. Writes candidate_plans, rejected_plans, chosen_plan, explanation."""
+    """STUB for Member 4's modules/planner.py. Writes candidate_plans, rejected_plans, chosen_plan, explanation.
+
+    Also sets awaiting_approval from tier_level: this is the flag graph.py's
+    interrupt_before pause on execute_node surfaces to a caller, so a
+    Tier 2 action halts visibly rather than silently.
+    """
     candidate_plans = [
         {"id": "defer_phone_bill", "name": "Defer the phone bill by 3 days",
+         "description": "defer the phone bill by 3 days",
          "impact_cents": 4500, "effort": 1, "reversible": False,
          "affects_third_party": True, "action_type": "request_deferral",
          "closes_gap": False, "score": 42.0,
@@ -144,11 +211,13 @@ def planner_node(state: CashFlowState) -> Dict[str, Any]:
         "STUB: Based on a placeholder forecast, a $112.00 shortfall is expected "
         "around 2026-09-13. Deferring the phone bill by 3 days would close it."
     )
+    awaiting_approval = state.get("tier_level") == TIER_APPROVAL
     trace = _trace(
         node="planner_node (STUB)",
         checked=["stub play library (2 plays evaluated)"],
         found={"candidates": 1, "rejected": 1},
-        concluded="Chose to propose deferring the phone bill (STUB).",
+        concluded="Chose to propose deferring the phone bill (STUB)."
+        + (" Halting for approval before acting." if awaiting_approval else ""),
         confidence="MEDIUM",
         degraded=False,
     )
@@ -157,6 +226,7 @@ def planner_node(state: CashFlowState) -> Dict[str, Any]:
         "rejected_plans": rejected_plans,
         "chosen_plan": chosen_plan,
         "explanation": explanation,
+        "awaiting_approval": awaiting_approval,
         "trace": [trace],
     }
 
