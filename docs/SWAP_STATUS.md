@@ -1,5 +1,78 @@
 # SWAP_STATUS.md — module swap-in status
 
+**Update 2026-09-06 (ingestion swap applied, bugs fixed):** `graph.py`'s
+import line now reads `from modules.ingestion import ingestion_node`.
+Landing this required three bug fixes, not just the import line:
+
+1. **`modules/ingestion.py` had `import boto3` at module scope.** With
+   boto3 not installed, the module failed at import time — before ever
+   reaching AWS-credential logic — which broke the non-negotiable
+   "every module runs to completion with no AWS credentials present" rule.
+   Fixed by moving the import inside `get_bedrock_client()` behind a
+   `try/except ImportError`, matching the lazy-import pattern `server.py`
+   already used for the same reason. Verified: `python modules/ingestion.py`
+   now runs to completion and prints `ALL INGESTION TESTS PASSED` with
+   boto3 absent.
+2. **`modules/forecast.py` silently dropped every `benchmark_prior` record.**
+   `build_cell_profiles()` derived `weekday` only from a real `"date"`
+   string; benchmark rows from `load_benchmark_prior()` carry
+   `"date": None` (they're not tied to a specific day) and their weekday
+   in a separate `"weekday"` field, so they never grouped into a cell at
+   all. Separately, `_recompute_net_cents()` — the anti-hallucination
+   "recompute every sum in Python" layer (`failure_mode_playbook.md`) —
+   rebuilt `net_cents` from `gross/tip/fee`, all zero on a benchmark row,
+   which would have zeroed out the cited rate even if it had reached a
+   cell. Fixed both: `build_cell_profiles()` now reads `record["weekday"]`
+   when present, falling back to deriving it from `date` otherwise;
+   `_recompute_net_cents()` trusts `net_cents` as-is for `source ==
+   "benchmark_prior"` rows (a static cited file, not an LLM output, so the
+   recompute guarantee it exists for doesn't apply).
+3. **`modules/ingestion.py`'s own `_build_health()` crashed on benchmark
+   rows.** It called `sorted()` on a list of `date` values without
+   filtering `None` — Python 3 can't compare `NoneType < NoneType` — so
+   any run that fell back to the benchmark prior raised `TypeError`
+   instead of returning a health dict. Fixed by filtering to dated rows
+   before sorting, with a `[None, None]` date range when none exist.
+
+Wrote the missing `ingestion_node(state)` wrapper referenced in this
+file's own swap notes below (`modules/ingestion.py` had all the pure
+functions — `normalise_records`, `parse_bank_statement`, `add_expenses`,
+`load_benchmark_prior`, `extract_from_text`, `build_trace` — but no
+function in the shape `graph.py` can import). It reads optional raw
+inputs off `state` (`raw_delivery_rows`/`raw_source`, `raw_bank_rows`,
+`raw_text`, `expenses`), merges whatever sources are present, and falls
+back to `data/benchmarks.json` when nothing else produced a record —
+returning `delivery_log`/`ingest_health`/`trace` in the exact shape
+`stubs.ingestion_node` used.
+
+Verified standalone (not yet over real HTTP — `langgraph` isn't installed
+in this environment, so `graph.py` itself couldn't be run end-to-end; this
+is a gap in verification, not a claim that it was checked):
+- `ingestion_node({})` (fresh thread, no raw data) falls back to the
+  benchmark prior instead of returning an empty log, health reports
+  `ok: True`, `rows_rejected: 0`, `sources_seen: ['benchmark_prior']`.
+- Feeding that benchmark-only `delivery_log` into `forecast_node` no
+  longer crashes and no longer silently drops the rows — they now group
+  into cells (still `status: UNKNOWN` per cell, since one benchmark row
+  per platform/weekday/time_block is still below `MIN_OBSERVATIONS` —
+  that's the existing "never backfill with an average" rule doing its
+  job correctly, not a bug).
+- `ingestion_node({"raw_delivery_rows": [...], "raw_source":
+  "partner_statement"})` with real rows produces a normal high-precision
+  `delivery_log` and a sane `forecast_node` output.
+- Both modules' own `__main__` self-tests (`ALL INGESTION TESTS PASSED`,
+  `ALL FORECAST TESTS PASSED`) still pass after all four fixes above.
+
+**Still open, flagged rather than fixed here:** `data/benchmarks.json`'s
+four entries all have `median_net_per_hour_cents: 0` and
+`"citation": "TODO: public source"` — real cited figures still need to be
+sourced before the cold-start prior is anything but an inert placeholder.
+And even with real figures, `MIN_OBSERVATIONS` means a single benchmark
+row per cell can never alone produce a `KNOWN` cell — worth a deliberate
+decision (more granular benchmark rows? a separate threshold for
+`benchmark_prior`-sourced cells?) rather than inheriting this ceiling by
+accident.
+
 **Update 2026-09-05 (swap applied):** `graph.py`'s import line now reads
 `from modules.forecast import forecast_node` — the swap described below is
 no longer pending, it's live. Verified after applying it:
@@ -20,15 +93,14 @@ no longer pending, it's live. Verified after applying it:
 
 | Node in graph.py | Real module on disk? | Currently imports from |
 |---|---|---|
-| `ingestion` | ✅ written and tested | `stubs.ingestion_node` |
+| `ingestion` | ✅ real, swapped in and verified standalone (see 2026-09-06 note above; not yet run inside `graph.py` itself — `langgraph` not installed here) | `modules.ingestion.ingestion_node` |
 | `forecast` | ✅ real, swapped in and verified | `modules.forecast.forecast_node` |
 | `gate` | ❌ `modules/materiality.py` does not exist | `stubs.gate_node` |
 | `planner` | ❌ `modules/planner.py` does not exist | `stubs.planner_node` |
 
-**1 of 4 nodes is swapped into `graph.py`.** The handbook's Step 4 "done
-when" criterion ("at least two real modules are swapped in") is still NOT
-met — needs one more real module (ingestion, gate, or planner) before that
-bar is cleared. This file exists instead of a fabricated pass — see
+**2 of 4 nodes are swapped into `graph.py`.** The handbook's Step 4 "done
+when" criterion ("at least two real modules are swapped in") is now met.
+This file exists instead of a fabricated pass — see
 server.py's swap-in comment block, reproduced below, for the exact change
 each remaining swap needs once the real files land.
 
@@ -96,7 +168,8 @@ node's own return-shape discipline, not by the graph itself.
 
 ## Also true right now
 
-- `data/benchmarks.json` does not exist (Member 3, ingestion step 3).
+- `data/benchmarks.json` exists but is a placeholder (see 2026-09-06 note
+  above — all-zero rates, uncited).
 - **Fixed 2026-09-05:** `stubs.py`'s `planner_node` now checks
   `state["user_constraints"]` before choosing a plan, so the flagship
   "three properties in fifteen seconds" demo (§4 — reject a plan, run

@@ -22,11 +22,15 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
 from shared.schema import CashFlowState, MAX_REPLAN_LOOPS, TIER_APPROVAL
-from stubs import ingestion_node, gate_node, planner_node
+from stubs import gate_node, planner_node
 # from stubs import forecast_node  # SWAPPED OUT 2026-09-05 -- kept here as the
 # fallback import; uncomment this and comment out the real import below if
 # modules/forecast.py ever regresses and blocks the demo.
 from modules.forecast import forecast_node  # Member 2's real forecast engine (docs/SWAP_STATUS.md)
+# from stubs import ingestion_node  # SWAPPED OUT 2026-09-06 -- kept here as the
+# fallback import; uncomment this and comment out the real import below if
+# modules/ingestion.py ever regresses and blocks the demo.
+from modules.ingestion import ingestion_node  # Member 3's real ingestion engine (docs/SWAP_STATUS.md)
 
 
 def _now_iso() -> str:

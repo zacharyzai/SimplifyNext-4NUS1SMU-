@@ -20,6 +20,7 @@ import os
 import re
 import sys
 from datetime import datetime
+from typing import List
 
 # Makes "from shared.money import ..." work no matter what folder you run
 # this file from -- it points Python at the repo root.
@@ -43,7 +44,25 @@ TIME_BLOCK_RANGES = [
 ]
 
 
+def _parse_hour(raw):
+    """Accepts an int hour, or a string like '18', '18:00', '6pm'. Returns
+    an int 0-23, or None if nothing usable is found -- callers treat that
+    as "unknown time block", not a reason to reject the whole row, since
+    an LLM transcribing free text may reasonably return either shape."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        hour = int(raw)
+        return hour if 0 <= hour <= 23 else None
+    match = re.match(r"^\s*(\d{1,2})", str(raw))
+    if not match:
+        return None
+    hour = int(match.group(1))
+    return hour if 0 <= hour <= 23 else None
+
+
 def _derive_time_block(hour):
+    hour = _parse_hour(hour)
     if hour is None:
         return "unknown"
     for start, end, label in TIME_BLOCK_RANGES:
@@ -154,11 +173,17 @@ def _build_health(raw_rows, accepted, rejection_reasons, source):
     rows_rejected = rows_in - rows_accepted
 
     if accepted:
-        dates = sorted(r["date"] for r in accepted)
-        date_range = [dates[0], dates[-1]]
         weighted_precision = sum(r["precision"] for r in accepted) / len(accepted)
-        last_date = datetime.strptime(dates[-1], "%Y-%m-%d")
-        days_since_last_observation = (datetime.utcnow() - last_date).days
+        # benchmark_prior rows carry date=None (they aren't tied to a real
+        # day) -- sorted() can't compare None, so only dated rows count here.
+        dates = sorted(r["date"] for r in accepted if r.get("date"))
+        if dates:
+            date_range = [dates[0], dates[-1]]
+            last_date = datetime.strptime(dates[-1], "%Y-%m-%d")
+            days_since_last_observation = (datetime.utcnow() - last_date).days
+        else:
+            date_range = [None, None]
+            days_since_last_observation = 9999
     else:
         date_range = [None, None]
         weighted_precision = 0.0
@@ -299,30 +324,24 @@ def load_benchmark_prior(path, platform):
         })
     return records
 
-import boto3
-
-MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-AWS_REGION = "ap-southeast-1"
-
-
-def get_bedrock_client():
-    session = boto3.Session(
-        profile_name=os.getenv("AWS_PROFILE", "workshop"),
-        region_name=os.getenv("AWS_DEFAULT_REGION", AWS_REGION),
-    )
-    return session.client("bedrock-runtime")
-
+from shared.llm import converse
 
 TRANSCRIBE_SYSTEM_PROMPT = (
     "Transcribe the figures exactly as written. Do not total, adjust, "
     "estimate, or infer any number. If a field is not present, use null. "
-    "Return ONLY a JSON array of objects with keys: date, platform, "
-    "start_hour, gross_cents, tip_cents, platform_fee_cents, trips, hours. "
+    "Return ONLY a JSON array of objects with keys: date (YYYY-MM-DD; use "
+    "null if no year is stated -- never guess one), platform, start_hour "
+    "(integer hour of day 0-23, e.g. 18 for 6pm or the first hour of a "
+    "stated range -- never a string like '18:00'), gross_cents, tip_cents, "
+    "platform_fee_cents (despite the field names, put the DOLLAR amount "
+    "exactly as written, e.g. \"62.00\" for $62.00 -- NOT the number of "
+    "cents; the pipeline converts these to integer cents downstream), "
+    "trips, hours. "
     "No prose, no markdown code fences, no explanation."
 )
 
 
-def extract_from_text(raw_text, bedrock_client):
+def extract_from_text(raw_text):
     """Pull structured records out of an unstructured payout message or a
     pasted earnings screen.
 
@@ -332,28 +351,23 @@ def extract_from_text(raw_text, bedrock_client):
     Python -- not the model -- re-derives every sum. Well-formed and
     correct are different properties; only recomputation catches a fluent
     but wrong transcription.
+
+    Goes through shared.llm.converse() -- the one call surface for both
+    providers -- rather than talking to boto3/google-genai directly, so
+    this function (and the demo) works unchanged whether LLM_PROVIDER is
+    bedrock, gemini, or none.
     """
-    if bedrock_client is None:
-        print("WARNING: no Bedrock client available -- skipping LLM transcription")
+    content = converse(TRANSCRIBE_SYSTEM_PROMPT, raw_text)
+    if content is None:
+        print("WARNING: no LLM available -- skipping LLM transcription")
         return []
 
     try:
-        response = bedrock_client.converse(
-            modelId=MODEL_ID,
-            system=[{"text": TRANSCRIBE_SYSTEM_PROMPT}],
-            messages=[{"role": "user", "content": [{"text": raw_text}]}],
-            inferenceConfig={"temperature": 0},
-        )
-        usage = response.get("usage", {})
-        print(f"Bedrock usage -- input tokens: {usage.get('inputTokens')}, output tokens: {usage.get('outputTokens')}")
-
-        content = response["output"]["message"]["content"][0]["text"].strip()
         if content.startswith("```"):
             content = content.strip("`").replace("json\n", "", 1)
-
         parsed_rows = json.loads(content)
-    except Exception as e:
-        print(f"WARNING: Bedrock transcription unavailable or failed ({e!r}) -- returning no records")
+    except (json.JSONDecodeError, AttributeError) as e:
+        print(f"WARNING: LLM transcription returned unparseable output ({e!r}) -- returning no records")
         return []
 
     records, _health = normalise_records(parsed_rows, source="screenshot_ocr")
@@ -392,6 +406,67 @@ def build_trace(ingest_health):
         "concluded": concluded,
         "confidence": confidence,
         "degraded": degraded,
+    }
+
+
+def ingestion_node(state: dict):
+    """Real ingestion node for graph.py -- reads whatever raw sources are
+    present in `state` (all optional; a fresh thread may have none) and
+    returns delivery_log/ingest_health/trace in the shape shared/schema.py
+    defines (same shape stubs.ingestion_node uses).
+
+    Recognised state inputs, all optional:
+      raw_delivery_rows + raw_source -- rows for normalise_records()
+      raw_bank_rows                  -- rows for parse_bank_statement()
+      raw_text                       -- unstructured text for extract_from_text()
+      expenses                       -- outgoings for add_expenses()
+    If none of these yield any records, falls back to the benchmarks.json
+    cold-start prior rather than returning an empty, UNKNOWN-forcing log.
+    """
+    delivery_log: List[dict] = []
+    rows_in = 0
+    rejection_reasons: List[str] = []
+    sources_seen: List[str] = []
+
+    if state.get("raw_delivery_rows"):
+        records, health = normalise_records(
+            state["raw_delivery_rows"], source=state.get("raw_source", "self_reported")
+        )
+        delivery_log += records
+        rows_in += health["rows_in"]
+        rejection_reasons += health["rejection_reasons"]
+        sources_seen += health["sources_seen"]
+
+    if state.get("raw_bank_rows"):
+        records, health = parse_bank_statement(state["raw_bank_rows"], today=None)
+        delivery_log += records
+        rows_in += health["rows_in"]
+        rejection_reasons += health["rejection_reasons"]
+        sources_seen += health["sources_seen"]
+
+    if state.get("raw_text"):
+        transcribed = extract_from_text(state["raw_text"])
+        if transcribed:
+            delivery_log += transcribed
+            sources_seen.append("screenshot_ocr")
+
+    if state.get("expenses"):
+        delivery_log = add_expenses(delivery_log, state["expenses"])
+
+    if not delivery_log:
+        for platform in ("Grab", "foodpanda", "Lalamove"):
+            delivery_log += load_benchmark_prior("data/benchmarks.json", platform)
+        if delivery_log:
+            sources_seen.append("benchmark_prior")
+            rows_in += len(delivery_log)  # every benchmark row is "in" and accepted, none rejected
+
+    health = _build_health([None] * rows_in, delivery_log, rejection_reasons, source="mixed")
+    health["sources_seen"] = sources_seen or ["none"]
+
+    return {
+        "delivery_log": delivery_log,
+        "ingest_health": health,
+        "trace": [build_trace(health)],
     }
 
 
@@ -488,15 +563,10 @@ if __name__ == "__main__":
         "platform fee $6.00, online 18:00-21:30."
     )
 
-    try:
-        client = get_bedrock_client()
-    except Exception:
-        client = None
+    transcribed = extract_from_text(payout_message)
+    print(f"\n{len(transcribed)} records transcribed (0 unless LLM_PROVIDER is set to a working provider).")
 
-    transcribed = extract_from_text(payout_message, client)
-    print(f"\n{len(transcribed)} records transcribed (expected 0 with no AWS credentials).")
-
-    print("\nSTEP 4 COMPLETED (ran to completion with no AWS credentials present)")
+    print("\nSTEP 4 COMPLETED (ran to completion with no LLM provider configured)")
     print("\n" + "=" * 60)
     print("STEP 5: build_trace() + hostile input test suite")
     print("=" * 60)

@@ -108,6 +108,10 @@ def _trace(node: str, checked: List[str], found: dict, concluded: str,
 def _recompute_net_cents(record: dict) -> int:
     """Never trust a `net_cents` the caller supplied -- recompute it from
     the components every time (HACKATHON_OBJECTIVES.md §3.2)."""
+    if record.get("source") == "benchmark_prior":
+        # A benchmark row is a single cited rate, not a gross/tip/fee
+        # breakdown -- recomputing from parts would silently zero it out.
+        return int(record.get("net_cents", 0) or 0)
     gross = int(record.get("gross_cents", 0) or 0)
     tip = int(record.get("tip_cents", 0) or 0)
     fee = int(record.get("platform_fee_cents", 0) or 0)
@@ -170,15 +174,21 @@ def build_cell_profiles(delivery_log: List[dict]) -> Dict[str, dict]:
     """
     groups: Dict[str, List[dict]] = {}
     for record in delivery_log:
-        date = record.get("date")
         platform = record.get("platform")
         time_block = record.get("time_block")
-        if not date or not platform or not time_block:
+        if not platform or not time_block:
             continue
-        try:
-            weekday = datetime.strptime(date, "%Y-%m-%d").weekday()
-        except ValueError:
-            continue
+        # Benchmark rows carry weekday directly (they have no real date);
+        # everything else derives it from the observed date.
+        weekday = record.get("weekday")
+        if weekday is None:
+            date = record.get("date")
+            if not date:
+                continue
+            try:
+                weekday = datetime.strptime(date, "%Y-%m-%d").weekday()
+            except ValueError:
+                continue
         key = _cell_key(platform, weekday, time_block)
         groups.setdefault(key, []).append(record)
 
