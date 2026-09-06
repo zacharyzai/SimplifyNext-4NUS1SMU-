@@ -24,12 +24,31 @@
   };
 
   // Heuristic for "checked" items that found nothing, per the spec's grey
-  // styling rule. Trace records don't (yet) carry per-item found/not-found
-  // flags, so this looks for the vocabulary a real module would actually
-  // use to describe an empty result (UNKNOWN cells, missing data, etc).
-  // Tighten this once modules/gate.py and modules/planner.py exist and
-  // emit real "checked" entries.
+  // styling rule. Trace records don't carry per-item found/not-found flags,
+  // so this looks for the vocabulary a module would actually use to
+  // describe an empty result (UNKNOWN cells, missing data, etc).
   const FOUND_NOTHING_PATTERN = /\b(unknown|insufficient|none|missing|no data|not seen|no earnings|absent)\b/i;
+
+  // Plain-English gloss for each pipeline stage, keyed by a substring of
+  // the trace record's raw node name (covers both the real module names --
+  // "ingestion", "forecast_engine", "materiality_gate", "planner" -- and
+  // the "(STUB)"-suffixed fallback names, so this doesn't need updating
+  // again if a module regresses to its stub). Orchestration-only nodes
+  // (clarify_node, execute_node, answer_endpoint, resume_after_approval)
+  // intentionally have no entry -- they fall back to showing just the raw
+  // node name, which is already plain enough.
+  const NODE_INFO = [
+    ["ingestion", "Reading your data", "Parses delivery logs, bank statements, and earnings messages into a clean record"],
+    ["forecast", "Projecting cash flow", "Runs deterministic math over historical patterns — no LLM guessing"],
+    ["gate", "Deciding whether to speak up", "Checks if the situation is material enough to bother the user"],
+    ["planner", "Choosing a plan", "Ranks and picks an action, rejecting others with stated reasons"],
+  ];
+
+  function friendlyNodeInfo(nodeName) {
+    const lower = (nodeName || "").toLowerCase();
+    const match = NODE_INFO.find(([key]) => lower.includes(key));
+    return match ? { label: match[1], description: match[2] } : null;
+  }
 
   // --- Theme -----------------------------------------------------------
 
@@ -207,17 +226,25 @@
   function renderTraceCard(record) {
     const degraded = !!record.degraded;
     const confidence = record.confidence || "MEDIUM";
+    const rawNode = record.node || "unknown node";
+    const info = friendlyNodeInfo(rawNode);
     const checkedItems = (record.checked || []).map((item) => {
       const grey = FOUND_NOTHING_PATTERN.test(item) ? " found-nothing" : "";
       return `<li class="${grey}">${escapeHtml(item)}</li>`;
     }).join("");
 
+    const headerHtml = info
+      ? `<span class="trace-node-name">${escapeHtml(info.label)}</span>
+         <code class="trace-node-raw">${escapeHtml(rawNode)}</code>`
+      : `<span class="trace-node-name">${escapeHtml(rawNode)}</span>`;
+
     return `
       <div class="trace-card confidence-${escapeHtml(confidence)}${degraded ? " degraded" : ""}">
         <div class="trace-card-header">
-          <span class="trace-node-name">${escapeHtml(record.node || "unknown node")}</span>
+          <span class="trace-node-heading">${headerHtml}</span>
           <span class="trace-ts">${escapeHtml(record.ts || "")}</span>
         </div>
+        ${info ? `<p class="trace-node-desc">${escapeHtml(info.description)}</p>` : ""}
         <div>
           <span class="chip confidence-${escapeHtml(confidence)}">${escapeHtml(confidence)}</span>
           ${degraded ? `<span class="chip degraded">Degraded</span>` : ""}
