@@ -7,20 +7,37 @@
     btnRun: document.getElementById("btn-run"),
     btnSimulate: document.getElementById("btn-simulate"),
     btnReset: document.getElementById("btn-reset"),
-    btnTheme: document.getElementById("btn-theme"),
     rawText: document.getElementById("raw-text"),
     status: document.getElementById("status-line"),
-    conversationBody: document.getElementById("conversation-body"),
-    traceBody: document.getElementById("trace-body"),
-    traceCount: document.getElementById("trace-count"),
-    openQuestionsContainer: document.getElementById("open-questions-container"),
+
+    conclusionText: document.getElementById("conclusion-text"),
+    explanationText: document.getElementById("explanation-text"),
+    planCard: document.getElementById("plan-card"),
+    planName: document.getElementById("plan-name"),
+    planMeta: document.getElementById("plan-meta"),
+    silentCard: document.getElementById("silent-card"),
+    constraintsCard: document.getElementById("constraints-card"),
+    constraintList: document.getElementById("constraint-list"),
+    rejectedCard: document.getElementById("rejected-card"),
+    rejectedSummary: document.getElementById("rejected-summary"),
+    rejectedList: document.getElementById("rejected-list"),
+
+    questionCard: document.getElementById("question-card"),
     openQuestionText: document.getElementById("open-question-text"),
     openQuestionProgress: document.getElementById("open-question-progress"),
     answerText: document.getElementById("answer-text"),
     btnSubmitAnswer: document.getElementById("btn-submit-answer"),
-    approvalContainer: document.getElementById("approval-container"),
+
+    liveDot: document.getElementById("live-dot"),
+    liveText: document.getElementById("live-text"),
+    approvalBar: document.getElementById("approval-bar"),
+    approvalAction: document.getElementById("approval-action"),
     btnApprove: document.getElementById("btn-approve"),
     btnReject: document.getElementById("btn-reject"),
+
+    traceMeta: document.getElementById("trace-meta"),
+    traceEmpty: document.getElementById("trace-empty"),
+    traceBody: document.getElementById("trace-body"),
   };
 
   // Heuristic for "checked" items that found nothing, per the spec's grey
@@ -49,34 +66,6 @@
     const match = NODE_INFO.find(([key]) => lower.includes(key));
     return match ? { label: match[1], description: match[2] } : null;
   }
-
-  // --- Theme -----------------------------------------------------------
-
-  const THEME_KEY = "cashflow-copilot-theme";
-
-  function applyTheme(theme) {
-    if (theme === "light" || theme === "dark") {
-      document.documentElement.setAttribute("data-theme", theme);
-    } else {
-      document.documentElement.removeAttribute("data-theme");
-    }
-  }
-
-  function initTheme() {
-    const saved = localStorage.getItem(THEME_KEY);
-    applyTheme(saved);
-  }
-
-  function toggleTheme() {
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const current = document.documentElement.getAttribute("data-theme") || (prefersDark ? "dark" : "light");
-    const next = current === "dark" ? "light" : "dark";
-    localStorage.setItem(THEME_KEY, next);
-    applyTheme(next);
-  }
-
-  initTheme();
-  els.btnTheme.addEventListener("click", toggleTheme);
 
   // --- Helpers -----------------------------------------------------------
 
@@ -137,23 +126,29 @@
     return els.userId.value.trim() || "bob-001";
   }
 
-  const ICON_CHECK = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5 9 17l11-11"/></svg>`;
-  const ICON_CONSTRAINT = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 7.5V12c0 5 3.8 8.7 9 9 5.2-.3 9-4 9-9V7.5L12 3Z"/></svg>`;
-  const ICON_REJECTED = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>`;
-  const ICON_QUIET = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M8 7v10M4 10v4M16 7v10M20 10v4"/></svg>`;
+  function setLive(state) {
+    // state: "idle" | "running" | "approval" | "question"
+    els.liveDot.classList.toggle("is-live", state === "running");
+    els.liveText.textContent = {
+      idle: "idle",
+      running: "streaming",
+      approval: "paused for approval",
+      question: "paused for answer",
+    }[state] || "idle";
+  }
 
   // --- Rendering -----------------------------------------------------------
 
   function renderConversation(data) {
     const s = data.state_summary || {};
-    let html = "";
 
     if (s.forecast) {
       const confidence = s.forecast.confidence || "UNKNOWN";
-      html += `<p class="conclusion-line">Projected shortfall of `
-        + `<strong>${fmtCents(s.forecast.shortfall_amount_cents)}</strong> on `
-        + `<strong>${escapeHtml(s.forecast.shortfall_date || "an unknown date")}</strong> `
-        + `<span class="chip confidence-${escapeHtml(confidence)}">${escapeHtml(confidence)}</span></p>`;
+      els.conclusionText.textContent =
+        `Projected shortfall of ${fmtCents(s.forecast.shortfall_amount_cents)} on `
+        + `${s.forecast.shortfall_date || "an unknown date"} (${confidence} confidence).`;
+    } else {
+      els.conclusionText.textContent = "No run yet.";
     }
 
     if (s.explanation) {
@@ -161,41 +156,47 @@
       // reach the user-facing explanation -- that's what the Trace panel
       // is for. Strip them here rather than in the stub data itself, so
       // the dev signal stays visible to the team while it's still useful.
-      const cleanExplanation = s.explanation.replace(/^\s*STUB:\s*/i, "");
-      html += `<div class="field-block"><h3>Explanation</h3><p>${escapeHtml(cleanExplanation)}</p></div>`;
+      els.explanationText.textContent = s.explanation.replace(/^\s*STUB:\s*/i, "");
+    } else {
+      els.explanationText.textContent = "Press \"Run agent\" to start a thread. The right column fills in one step at a time, exactly as the agent completes them.";
     }
 
     if (s.chosen_plan) {
-      html += `<div class="field-block"><h3>Chosen plan</h3>`
-        + `<div class="plan-card"><div class="plan-name">${escapeHtml(s.chosen_plan.name || s.chosen_plan.id || "unnamed")}</div>`
-        + `<div class="plan-meta"><span>Impact: <strong>${fmtCents(s.chosen_plan.impact_cents)}</strong></span>`
-        + `<span>Effort: <strong>${escapeHtml(s.chosen_plan.effort ?? "unknown")}</strong></span></div>`
-        + `</div></div>`;
+      els.planName.textContent = s.chosen_plan.name || s.chosen_plan.id || "unnamed";
+      els.planMeta.innerHTML = `Impact: <strong>${fmtCents(s.chosen_plan.impact_cents)}</strong> &middot; Effort: <strong>${escapeHtml(s.chosen_plan.effort ?? "unknown")}</strong>`;
+      els.planCard.hidden = false;
+      els.silentCard.hidden = true;
     } else if (s.materiality_flag && s.materiality_flag.fire === false) {
-      html += `<div class="field-block"><h3>Decision</h3>`
-        + `<div class="silent-note">${ICON_QUIET}<p>Staying silent — the situation does not clear the materiality threshold right now.</p></div></div>`;
+      els.planCard.hidden = true;
+      els.silentCard.hidden = false;
+    } else {
+      els.planCard.hidden = true;
+      els.silentCard.hidden = true;
     }
 
     if (s.user_constraints && s.user_constraints.length) {
-      html += `<div class="field-block"><h3>Remembered constraints</h3><ul class="constraint-list">`
-        + s.user_constraints.map((c) => `<li>${ICON_CONSTRAINT}<span>${escapeHtml(c)}</span></li>`).join("")
-        + `</ul></div>`;
+      els.constraintList.innerHTML = s.user_constraints.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
+      els.constraintsCard.hidden = false;
+    } else {
+      els.constraintsCard.hidden = true;
     }
 
     if (s.rejected_plans && s.rejected_plans.length) {
-      html += `<details class="rejected-plays"><summary>Rejected plays (${s.rejected_plans.length})</summary>`
-        + `<ul class="rejected-list">`
-        + s.rejected_plans.map((p) => `<li>${ICON_REJECTED}<span><strong>${escapeHtml(p.id)}</strong> — ${escapeHtml(p.reason)}</span></li>`).join("")
-        + `</ul></details>`;
+      els.rejectedSummary.textContent = `${s.rejected_plans.length} plan(s) rejected — show reasons`;
+      els.rejectedList.innerHTML = s.rejected_plans.map((p) =>
+        `<li><span class="rej-id">${escapeHtml(p.id)}</span><span class="rej-reason">${escapeHtml(p.reason)}</span></li>`
+      ).join("");
+      els.rejectedCard.hidden = false;
+    } else {
+      els.rejectedCard.hidden = true;
     }
-
-    els.conversationBody.innerHTML = html || `<div class="empty-state"><p>Run produced no output.</p></div>`;
 
     // Backend orders open_questions by whatever blocks forecast confidence
     // most (modules/forecast.py's find_data_gaps: soonest-first, then
     // fewest observations) -- so showing only the first one always means
     // showing the single most-blocking question, never a dump of the list.
-    if (data.open_questions && data.open_questions.length) {
+    const hasQuestion = data.open_questions && data.open_questions.length;
+    if (hasQuestion) {
       els.openQuestionText.textContent = data.open_questions[0];
       const remaining = data.open_questions.length - 1;
       if (remaining > 0) {
@@ -204,23 +205,19 @@
       } else {
         els.openQuestionProgress.hidden = true;
       }
-      els.openQuestionsContainer.hidden = false;
+      els.questionCard.hidden = false;
     } else {
-      els.openQuestionsContainer.hidden = true;
+      els.questionCard.hidden = true;
     }
 
-    els.approvalContainer.hidden = !data.awaiting_approval;
-  }
-
-  function renderTrace(trace) {
-    if (!trace || !trace.length) {
-      els.traceBody.innerHTML = `<div class="empty-state"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg><p>No trace yet for this thread.</p></div>`;
-      els.traceCount.hidden = true;
-      return;
+    els.approvalBar.hidden = !data.awaiting_approval;
+    if (data.awaiting_approval && s.chosen_plan) {
+      els.approvalAction.textContent = s.chosen_plan.name || s.chosen_plan.id || "";
     }
-    els.traceBody.innerHTML = trace.map(renderTraceCard).join("");
-    els.traceCount.hidden = false;
-    els.traceCount.textContent = `${trace.length} step${trace.length === 1 ? "" : "s"}`;
+
+    if (data.awaiting_approval) setLive("approval");
+    else if (hasQuestion) setLive("question");
+    else setLive("idle");
   }
 
   function renderTraceCard(record) {
@@ -228,9 +225,9 @@
     const confidence = record.confidence || "MEDIUM";
     const rawNode = record.node || "unknown node";
     const info = friendlyNodeInfo(rawNode);
-    const checkedItems = (record.checked || []).map((item) => {
+    const checkedItems = (record.checked || []).map((item, i) => {
       const grey = FOUND_NOTHING_PATTERN.test(item) ? " found-nothing" : "";
-      return `<li class="${grey}">${escapeHtml(item)}</li>`;
+      return `<li class="${grey}" style="animation-delay:${i * 45}ms"><span class="mark">${grey ? "–" : "✓"}</span><span class="label">${escapeHtml(item)}</span></li>`;
     }).join("");
 
     const headerHtml = info
@@ -239,46 +236,91 @@
       : `<span class="trace-node-name">${escapeHtml(rawNode)}</span>`;
 
     return `
-      <div class="trace-card confidence-${escapeHtml(confidence)}${degraded ? " degraded" : ""}">
+      <article class="trace-card${degraded ? " degraded" : ""}">
         <div class="trace-card-header">
           <span class="trace-node-heading">${headerHtml}</span>
           <span class="trace-ts">${escapeHtml(record.ts || "")}</span>
+          ${degraded ? `<span class="chip degraded">degraded</span>` : ""}
+          <span class="chip confidence-${escapeHtml(confidence)}">${escapeHtml(confidence)}</span>
         </div>
         ${info ? `<p class="trace-node-desc">${escapeHtml(info.description)}</p>` : ""}
-        <div>
-          <span class="chip confidence-${escapeHtml(confidence)}">${escapeHtml(confidence)}</span>
-          ${degraded ? `<span class="chip degraded">Degraded</span>` : ""}
-        </div>
-        ${checkedItems ? `<ul class="trace-checked">${checkedItems}</ul>` : ""}
+        ${checkedItems ? `<span class="trace-concluded-label">Checked</span><ul class="trace-checked">${checkedItems}</ul>` : ""}
+        <span class="trace-concluded-label">Concluded</span>
         <p class="trace-concluded">${escapeHtml(record.concluded || "")}</p>
-      </div>`;
+      </article>`;
+  }
+
+  function refreshTraceMeta() {
+    const count = els.traceBody.querySelectorAll(".trace-card").length;
+    els.traceEmpty.hidden = count > 0;
+    els.traceMeta.textContent = count > 0 ? `${count} step${count === 1 ? "" : "s"} · newest at the bottom` : "no thread yet";
+  }
+
+  function beginLiveTrace() {
+    els.traceBody.innerHTML = "";
+    refreshTraceMeta();
+  }
+
+  function appendLiveTraceCard(record) {
+    els.traceBody.insertAdjacentHTML("beforeend", renderTraceCard(record));
+    refreshTraceMeta();
+  }
+
+  // Used by the non-streamed endpoints (/approve, /answer) -- they return
+  // the thread's full trace in one shot rather than as SSE events, so the
+  // panel gets rebuilt wholesale instead of appended to.
+  function renderFullTrace(trace) {
+    els.traceBody.innerHTML = (trace || []).map(renderTraceCard).join("");
+    refreshTraceMeta();
   }
 
   // --- Actions -----------------------------------------------------------
 
-  async function runAgent(button, label, inputs) {
-    await withLoading(button, label, async () => {
-      try {
-        const body = { user_id: currentUserId(), thread_id: currentThreadId() };
-        if (inputs) body.inputs = inputs;
-        const data = await postJSON("/run", body);
+  // Streams /run/{run_id}/stream via EventSource instead of waiting on a
+  // single blocking POST -- each "trace" event lands the moment that node
+  // actually finishes (LLM calls and all), so the right panel builds up
+  // live instead of appearing all at once after the whole run completes.
+  function runAgent(button, label, rawText) {
+    return withLoading(button, label, () => new Promise((resolve) => {
+      beginLiveTrace();
+      setLive("running");
+      const params = new URLSearchParams({ user_id: currentUserId() });
+      if (rawText) params.set("raw_text", rawText);
+      const es = new EventSource(`/run/${encodeURIComponent(currentThreadId())}/stream?${params}`);
+
+      es.addEventListener("trace", (e) => {
+        const record = JSON.parse(e.data);
+        appendLiveTraceCard(record);
+        const info = friendlyNodeInfo(record.node);
+        setStatus(`${info ? info.label : record.node}…`);
+      });
+
+      es.addEventListener("done", (e) => {
+        const data = JSON.parse(e.data);
+        es.close();
         if (!data.ok) {
           setStatus(`Error: ${data.error}`, true);
-          return;
+          setLive("idle");
+        } else {
+          renderConversation(data);
+          setStatus(`${label} — done.`);
         }
-        renderConversation(data);
-        renderTrace(data.trace);
-        setStatus(`${label} — done.`);
-      } catch (err) {
-        setStatus(`Network error: ${err.message || err}`, true);
-      }
-    });
+        resolve();
+      });
+
+      es.addEventListener("error", (e) => {
+        es.close();
+        const message = e.data ? (JSON.parse(e.data).error || "stream error") : "connection lost";
+        setStatus(`Error: ${message}`, true);
+        setLive("idle");
+        resolve();
+      });
+    }));
   }
 
   els.btnRun.addEventListener("click", () => {
     const rawText = els.rawText.value.trim();
-    const inputs = rawText ? { raw_text: rawText } : undefined;
-    runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", inputs);
+    runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", rawText);
   });
   els.btnSimulate.addEventListener("click", () => runAgent(els.btnSimulate, "Simulate next Wednesday"));
 
@@ -288,8 +330,9 @@
         const data = await postJSON("/demo/reset", { thread_id: currentThreadId() });
         if (data.ok) {
           renderConversation({ state_summary: {}, open_questions: [], awaiting_approval: false });
-          renderTrace([]);
+          beginLiveTrace();
           els.rawText.value = "";
+          setLive("idle");
           setStatus("Demo reset.");
         } else {
           setStatus(`Error: ${data.error}`, true);
@@ -306,7 +349,7 @@
         const data = await postJSON("/approve", { thread_id: currentThreadId(), approved: true });
         if (data.ok) {
           renderConversation(data);
-          renderTrace(data.trace);
+          renderFullTrace(data.trace);
           setStatus("Approved — action executed.");
         } else {
           setStatus(`Error: ${data.error}`, true);
@@ -323,7 +366,7 @@
         const data = await postJSON("/approve", { thread_id: currentThreadId(), approved: false });
         if (data.ok) {
           renderConversation(data);
-          renderTrace(data.trace);
+          renderFullTrace(data.trace);
           setStatus("Rejected — constraint recorded.");
         } else {
           setStatus(`Error: ${data.error}`, true);
@@ -346,7 +389,7 @@
         if (data.ok) {
           els.answerText.value = "";
           renderConversation(data);
-          renderTrace(data.trace);
+          renderFullTrace(data.trace);
           setStatus("Answer sent.");
         } else {
           setStatus(`Error: ${data.error}`, true);

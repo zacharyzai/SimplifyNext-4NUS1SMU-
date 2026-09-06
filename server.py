@@ -9,11 +9,13 @@ RULE FOR THE WHOLE FILE: no endpoint may ever return a 500. The demo must
 never show a stack trace to a judge, so every handler is wrapped to return
 a 200 with {"ok": false, "error": str} on any failure instead.
 """
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -98,6 +100,43 @@ def run(req: RunRequest) -> Dict[str, Any]:
         return _run_response(state)
     except Exception as exc:  # noqa: BLE001 -- the demo must never show a 500
         return _error_response(exc)
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.get("/run/{run_id}/stream")
+def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = None) -> StreamingResponse:
+    """SSE version of /run: one 'trace' event per node as the graph
+    actually executes it, then a final 'done' event in the same shape
+    /run returns (so the front end's existing renderConversation() works
+    unchanged for it).
+
+    GET, not POST -- EventSource can only issue GET with no body, so
+    run_id doubles as the thread_id and any raw input rides in the query
+    string instead of a JSON payload.
+    """
+    def event_stream():
+        config = {"configurable": {"thread_id": run_id}}
+        inputs: Dict[str, Any] = {"user_id": user_id, "loop_count": 0}
+        if raw_text:
+            inputs["raw_text"] = raw_text
+        try:
+            for update in agent_graph.graph.stream(inputs, config=config, stream_mode="updates"):
+                for node_update in update.values():
+                    for record in node_update.get("trace", []) or []:
+                        yield _sse("trace", record)
+            state = agent_graph.graph.get_state(config).values
+            yield _sse("done", _run_response(state))
+        except Exception as exc:  # noqa: BLE001 -- a dropped stream must not 500, just stop
+            yield _sse("error", _error_response(exc))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/approve")

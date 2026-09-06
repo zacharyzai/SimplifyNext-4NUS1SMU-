@@ -3,124 +3,119 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="light">
 <title>Agentic Cash-Flow Copilot for Bob</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <header class="topbar">
   <div class="topbar-heading">
-    <h1>Agentic Cash-Flow Copilot</h1>
-    <p>Materiality-gated, permission-tiered cash-flow forecasting for a Singapore gig worker.</p>
+    <h1>The Agentic Cash-Flow Copilot</h1>
+    <p>Gig-income shortfall detection for Bob — every step it takes is shown on the right.</p>
   </div>
-  <button type="button" class="theme-toggle" id="btn-theme" aria-label="Toggle dark mode" title="Toggle dark mode">
-    <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-    <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></svg>
-  </button>
+  <div class="id-fields">
+    <label class="id-field">
+      <span>Thread</span>
+      <input id="thread-id" type="text" value="bob-001" autocomplete="off">
+    </label>
+    <label class="id-field">
+      <span>User</span>
+      <input id="user-id" type="text" value="bob-001" autocomplete="off">
+    </label>
+  </div>
 </header>
 
-<div class="controls">
-  <div class="field">
-    <label for="thread-id">Thread</label>
-    <input id="thread-id" type="text" value="bob-001" autocomplete="off">
-  </div>
-  <div class="field">
-    <label for="user-id">User</label>
-    <input id="user-id" type="text" value="bob-001" autocomplete="off">
-  </div>
-  <div class="button-row">
-    <button class="primary" id="btn-run" type="button">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5.5v13l11-6.5-11-6.5Z"/></svg>
-      <svg class="icon spinner" aria-hidden="true"></svg>
-      <span>Run agent</span>
-    </button>
-    <button id="btn-simulate" type="button">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.2M20 12a8 8 0 0 1-14 5.2"/><path d="M17.5 3.5v3.5H14M6.5 20.5V17H10"/></svg>
-      <svg class="icon spinner" aria-hidden="true"></svg>
-      <span>Simulate next Wednesday</span>
-    </button>
-    <button class="ghost" id="btn-reset" type="button">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>
-      <span>Reset demo</span>
-    </button>
-  </div>
-  <div class="field llm-field">
-    <label for="raw-text">Earnings message <span class="field-hint">(optional — transcribed by the LLM)</span></label>
-    <p class="field-explainer">Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it.</p>
-    <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot;"></textarea>
-  </div>
-</div>
-<div id="status-line" role="status" aria-live="polite">Ready.</div>
+<div id="status-line" class="sr-status" role="status" aria-live="polite">Ready.</div>
 
-<main>
-  <section class="panel" id="conversation-panel">
-    <div class="panel-header">
-      <h2>
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z"/></svg>
-        Conversation
-      </h2>
+<main class="layout">
+
+  <section class="left-col">
+    <div class="card conclusion-card">
+      <span class="eyebrow">Conclusion</span>
+      <p class="conclusion-text" id="conclusion-text">No run yet.</p>
+      <p class="explanation-text" id="explanation-text">Press "Run agent" to start a thread. The right column fills in one step at a time, exactly as the agent completes them.</p>
     </div>
-    <div id="conversation-body">
-      <div class="empty-state">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z"/></svg>
-        <p>Nothing yet — click "Run agent" to start.</p>
+
+    <div class="card plan-card" id="plan-card" hidden>
+      <span class="eyebrow">Chosen plan</span>
+      <div class="plan-name" id="plan-name"></div>
+      <div class="plan-meta" id="plan-meta"></div>
+    </div>
+
+    <div class="card silent-card" id="silent-card" hidden>
+      <span class="eyebrow">Decision</span>
+      <p class="silent-text">Staying silent — the situation does not clear the materiality threshold right now.</p>
+    </div>
+
+    <div class="card constraints-card" id="constraints-card" hidden>
+      <span class="eyebrow">Remembered constraints</span>
+      <ul class="constraint-list" id="constraint-list"></ul>
+    </div>
+
+    <details class="card rejected-card" id="rejected-card" hidden>
+      <summary id="rejected-summary"></summary>
+      <ul class="rejected-list" id="rejected-list"></ul>
+    </details>
+
+    <div class="card question-card" id="question-card" hidden>
+      <span class="eyebrow eyebrow-accent">Open question · answer to continue <span class="open-question-progress" id="open-question-progress" hidden></span></span>
+      <p class="question-text" id="open-question-text"></p>
+      <textarea id="answer-text" rows="2" placeholder="Type your answer"></textarea>
+      <button class="btn btn-dark" id="btn-submit-answer" type="button">Submit answer</button>
+    </div>
+
+    <div class="card llm-card">
+      <span class="eyebrow">Earnings message <span class="eyebrow-hint">optional — transcribed by the LLM</span></span>
+      <p class="field-explainer">Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it.</p>
+      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot;"></textarea>
+    </div>
+
+    <div class="endpoints-footer">
+      <div>GET /run/&#123;thread_id&#125;/stream</div>
+      <div>POST /answer &middot; POST /approve &middot; POST /demo/reset</div>
+    </div>
+  </section>
+
+  <section class="right-col">
+    <div class="sticky-controls">
+      <div class="control-row">
+        <button class="btn btn-dark" id="btn-run" type="button">Run agent</button>
+        <button class="btn btn-outline" id="btn-simulate" type="button">Simulate next Wednesday</button>
+        <span class="spacer"></span>
+        <span class="live-indicator"><span class="live-dot" id="live-dot"></span><span id="live-text">idle</span></span>
+        <button class="btn btn-ghost" id="btn-reset" type="button">Reset demo</button>
       </div>
-    </div>
 
-    <div id="open-questions-container" hidden>
-      <div id="answer-box">
-        <p class="prompt-title">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 8v4.5"/></svg>
-          <span>The agent isn't confident yet — it's asking:</span>
-          <span class="prompt-progress" id="open-question-progress" hidden></span>
-        </p>
-        <p id="open-question-text"></p>
-        <textarea id="answer-text" placeholder="Type an answer covering the question above..."></textarea>
-        <div class="answer-actions">
-          <button class="primary" id="btn-submit-answer" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-7-6 16-3-6-7-3Z"/></svg>
-            <span>Send answer</span>
-          </button>
+      <div class="approval-bar" id="approval-bar" hidden>
+        <div class="approval-info">
+          <span class="eyebrow eyebrow-warning">Permission required · Tier 2</span>
+          <span class="approval-action" id="approval-action"></span>
+          <span class="approval-reason">This action needs your approval before it can proceed.</span>
         </div>
-      </div>
-    </div>
-
-    <div id="approval-container" hidden>
-      <div id="approval-bar">
-        <p class="prompt-title">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17v.01M10.3 3.9 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
-          This action needs your approval before it can proceed.
-        </p>
         <div class="approval-actions">
-          <button class="primary" id="btn-approve" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5 9 17l11-11"/></svg>
-            <span>Approve</span>
-          </button>
-          <button class="danger" id="btn-reject" type="button">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
-            <span>Reject</span>
-          </button>
+          <button class="btn btn-approve" id="btn-approve" type="button">Approve</button>
+          <button class="btn btn-reject" id="btn-reject" type="button">Reject</button>
         </div>
       </div>
     </div>
+
+    <div class="trace-heading">
+      <span class="eyebrow">Agent trace</span>
+      <span class="trace-meta" id="trace-meta">no thread yet</span>
+    </div>
+
+    <div class="empty-state-block" id="trace-empty">
+      <p class="empty-title">No steps yet</p>
+      <p class="empty-sub">nothing renders here unless the agent actually ran the step<br>press &ldquo;Run agent&rdquo; to start a thread</p>
+    </div>
+
+    <div class="trace-list" id="trace-body"></div>
   </section>
 
-  <section class="panel" id="trace-panel">
-    <div class="panel-header">
-      <h2>
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>
-        Trace
-      </h2>
-      <span class="trace-count" id="trace-count" hidden>0 steps</span>
-    </div>
-    <div id="trace-body">
-      <div class="empty-state">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>
-        <p>No trace yet for this thread.</p>
-      </div>
-    </div>
-  </section>
 </main>
 
 <script src="/app.js"></script>
