@@ -136,7 +136,12 @@
     }
 
     if (s.explanation) {
-      html += `<div class="field-block"><h3>Explanation</h3><p>${escapeHtml(s.explanation)}</p></div>`;
+      // Dev-only markers ("STUB:") from not-yet-real modules must never
+      // reach the user-facing explanation -- that's what the Trace panel
+      // is for. Strip them here rather than in the stub data itself, so
+      // the dev signal stays visible to the team while it's still useful.
+      const cleanExplanation = s.explanation.replace(/^\s*STUB:\s*/i, "");
+      html += `<div class="field-block"><h3>Explanation</h3><p>${escapeHtml(cleanExplanation)}</p></div>`;
     }
 
     if (s.chosen_plan) {
