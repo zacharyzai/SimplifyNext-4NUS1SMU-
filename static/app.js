@@ -8,12 +8,14 @@
     btnSimulate: document.getElementById("btn-simulate"),
     btnReset: document.getElementById("btn-reset"),
     btnTheme: document.getElementById("btn-theme"),
+    rawText: document.getElementById("raw-text"),
     status: document.getElementById("status-line"),
     conversationBody: document.getElementById("conversation-body"),
     traceBody: document.getElementById("trace-body"),
     traceCount: document.getElementById("trace-count"),
     openQuestionsContainer: document.getElementById("open-questions-container"),
-    openQuestionsList: document.getElementById("open-questions-list"),
+    openQuestionText: document.getElementById("open-question-text"),
+    openQuestionProgress: document.getElementById("open-question-progress"),
     answerText: document.getElementById("answer-text"),
     btnSubmitAnswer: document.getElementById("btn-submit-answer"),
     approvalContainer: document.getElementById("approval-container"),
@@ -170,8 +172,19 @@
 
     els.conversationBody.innerHTML = html || `<div class="empty-state"><p>Run produced no output.</p></div>`;
 
+    // Backend orders open_questions by whatever blocks forecast confidence
+    // most (modules/forecast.py's find_data_gaps: soonest-first, then
+    // fewest observations) -- so showing only the first one always means
+    // showing the single most-blocking question, never a dump of the list.
     if (data.open_questions && data.open_questions.length) {
-      els.openQuestionsList.innerHTML = data.open_questions.map((q) => `<li>${escapeHtml(q)}</li>`).join("");
+      els.openQuestionText.textContent = data.open_questions[0];
+      const remaining = data.open_questions.length - 1;
+      if (remaining > 0) {
+        els.openQuestionProgress.textContent = `(+${remaining} more after this)`;
+        els.openQuestionProgress.hidden = false;
+      } else {
+        els.openQuestionProgress.hidden = true;
+      }
       els.openQuestionsContainer.hidden = false;
     } else {
       els.openQuestionsContainer.hidden = true;
@@ -216,13 +229,12 @@
 
   // --- Actions -----------------------------------------------------------
 
-  async function runAgent(button, label) {
+  async function runAgent(button, label, inputs) {
     await withLoading(button, label, async () => {
       try {
-        const data = await postJSON("/run", {
-          user_id: currentUserId(),
-          thread_id: currentThreadId(),
-        });
+        const body = { user_id: currentUserId(), thread_id: currentThreadId() };
+        if (inputs) body.inputs = inputs;
+        const data = await postJSON("/run", body);
         if (!data.ok) {
           setStatus(`Error: ${data.error}`, true);
           return;
@@ -236,7 +248,11 @@
     });
   }
 
-  els.btnRun.addEventListener("click", () => runAgent(els.btnRun, "Run agent"));
+  els.btnRun.addEventListener("click", () => {
+    const rawText = els.rawText.value.trim();
+    const inputs = rawText ? { raw_text: rawText } : undefined;
+    runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", inputs);
+  });
   els.btnSimulate.addEventListener("click", () => runAgent(els.btnSimulate, "Simulate next Wednesday"));
 
   els.btnReset.addEventListener("click", async () => {
@@ -246,6 +262,7 @@
         if (data.ok) {
           renderConversation({ state_summary: {}, open_questions: [], awaiting_approval: false });
           renderTrace([]);
+          els.rawText.value = "";
           setStatus("Demo reset.");
         } else {
           setStatus(`Error: ${data.error}`, true);

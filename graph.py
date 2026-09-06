@@ -15,14 +15,13 @@ Three routing decisions turn the pipeline into an agent:
   - the Tier 2 approval halt: an irreversible/material action pauses the
     graph (interrupt_before=["execute_node"]) until Bob approves it.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
 from shared.schema import CashFlowState, MAX_REPLAN_LOOPS, TIER_APPROVAL
-from stubs import gate_node, planner_node
 # from stubs import forecast_node  # SWAPPED OUT 2026-09-05 -- kept here as the
 # fallback import; uncomment this and comment out the real import below if
 # modules/forecast.py ever regresses and blocks the demo.
@@ -31,6 +30,11 @@ from modules.forecast import forecast_node  # Member 2's real forecast engine (d
 # fallback import; uncomment this and comment out the real import below if
 # modules/ingestion.py ever regresses and blocks the demo.
 from modules.ingestion import ingestion_node  # Member 3's real ingestion engine (docs/SWAP_STATUS.md)
+# from stubs import gate_node, planner_node  # SWAPPED OUT 2026-09-06 -- kept
+# here as the fallback import; uncomment and comment out the real imports
+# below if modules/materiality.py or modules/planner.py ever regress.
+from modules.materiality import gate_node  # Member 4's real materiality gate (docs/SWAP_STATUS.md)
+from modules.planner import planner_node  # Member 4's real planner (docs/SWAP_STATUS.md)
 
 
 def _now_iso() -> str:
@@ -244,8 +248,30 @@ if __name__ == "__main__":
     # the MAX_REPLAN_LOOPS ceiling instead of "resolving" after one pass).
     # Either way the invariant that matters is: it looped at least once,
     # and it never exceeded the ceiling.
-    print("\n=== Demo (a): replanning loop (default scenario -> TIER_NOTIFY) ===")
-    state_a = run_agent(user_id="bob-001", thread_id="bob-demo-a")
+    # Real ingestion + real materiality means the three scenarios below can
+    # no longer be selected by a magic user_id string (that was the STUB's
+    # trick) -- they're driven by what raw_delivery_rows actually says,
+    # same as a real thread would be. A thin/short earnings history (a) is
+    # what genuinely produces a real shortfall at non-HIGH confidence.
+    def _recent_daily_rows(num_days, daily_gross_cents, end_offset_days=1):
+        end_date = datetime.now(timezone.utc).date() - timedelta(days=end_offset_days)
+        return [
+            {
+                "date": (end_date - timedelta(days=i)).isoformat(),
+                "platform": "Grab", "start_hour": 18,
+                "gross_cents": str(daily_gross_cents / 100),
+                "tip_cents": "0.00", "platform_fee_cents": "0.00",
+                "trips": 4, "hours": 3.0,
+            }
+            for i in range(num_days)
+        ]
+
+    print("\n=== Demo (a): replanning loop (real shortfall -> TIER_NOTIFY) ===")
+    thin_history = _recent_daily_rows(num_days=3, daily_gross_cents=5000)
+    state_a = run_agent(
+        user_id="bob-001", thread_id="bob-demo-a",
+        inputs={"raw_delivery_rows": thin_history, "raw_source": "partner_statement"},
+    )
     _print_trace(state_a)
     assert 1 <= state_a["loop_count"] <= MAX_REPLAN_LOOPS, (
         f"expected the replan loop to fire at least once and never exceed "
@@ -257,16 +283,41 @@ if __name__ == "__main__":
     print(f"   loop_count={state_a['loop_count']} (ceiling={MAX_REPLAN_LOOPS}), tier_level={state_a['tier_level']}")
 
     # --- Demo (b): the gate does not fire -> ends early in silence ---------
+    # Genuinely healthy, recent, 14-day partner-statement history: enough
+    # for HIGH confidence and enough daily income that the fixed demo bill
+    # calendar (forecast.py's DEMO_BILLS) never dips the balance negative --
+    # nothing material AND nothing stale, so both real checks stay quiet.
     print("\n=== Demo (b): materiality gate stays silent ===")
-    state_b = run_agent(user_id="bob-silent-001", thread_id="bob-demo-b")
+    healthy_history = _recent_daily_rows(num_days=14, daily_gross_cents=12000, end_offset_days=1)
+    state_b = run_agent(
+        user_id="bob-001", thread_id="bob-demo-b",
+        inputs={"raw_delivery_rows": healthy_history, "raw_source": "partner_statement"},
+    )
     _print_trace(state_b)
     assert state_b["materiality_flag"]["fire"] is False
     assert "chosen_plan" not in state_b, "planner should never have run"
-    print("   Path: forecast(LOW) -> clarify -> ingestion -> forecast(HIGH) -> gate(silent) -> END")
+    print("   Path: forecast(HIGH, no shortfall) -> gate(silent) -> END")
 
     # --- Demo (c): a Tier 2 action halts, then resumes after approval ------
+    # Reuses Demo (a)'s thin/shortfall history, but pre-seeds constraints
+    # excluding every reversible play in the library -- the only survivor
+    # is defer_phone_bill (irreversible + third-party), which forces a
+    # real TIER_APPROVAL through classify_action rather than a scripted one.
     print("\n=== Demo (c): Tier 2 action halts for approval, then resumes ===")
-    state_c = run_agent(user_id="bob-approval-001", thread_id="bob-demo-c")
+    for reversible_play_constraint in [
+        "never shift into saturday dinner",
+        "never work a sunday dinner shift",
+        "never take extra trips",
+        "never move money to a buffer",
+        "never pause the streaming subscription",
+        "never touch bike servicing",  # not "never defer..." -- collides with defer_phone_bill's "defer"
+        "never log a shift",
+    ]:
+        save_constraint("bob-demo-c", reversible_play_constraint)
+    state_c = run_agent(
+        user_id="bob-001", thread_id="bob-demo-c",
+        inputs={"raw_delivery_rows": thin_history, "raw_source": "partner_statement"},
+    )
     _print_trace(state_c)
     assert state_c.get("awaiting_approval") is True, "Tier 2 action should halt awaiting approval"
     print("   Halted: awaiting_approval =", state_c["awaiting_approval"])

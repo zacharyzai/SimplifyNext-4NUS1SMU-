@@ -14,11 +14,14 @@ authoritative "what are we building and is it done" answer, see
 - [x] `shared/resilience.py` — `resilient_call()` / `merge_tool_health()`.
 - [x] `graph.py` / `stubs.py` — LangGraph skeleton on stubs + checkpointing.
 - [x] `server.py`, `static/index.html` — FastAPI backend + trace-panel demo UI (trace panel not yet browser-verified, see HACKATHON_OBJECTIVES.md §7.1 Step 5).
-- [x] `modules/forecast.py` — deterministic forecast engine (zero LLM calls). Tests pass; not yet swapped into `graph.py` (docs/SWAP_STATUS.md).
-- [ ] `modules/ingestion.py` — ingestion & grounding, provenance-weighted.
-- [ ] `modules/materiality.py` — materiality scoring + permission tiering.
-- [ ] `modules/planner.py` — play library + plan selection.
-- [ ] `data/benchmarks.json` — cited cold-start earnings prior.
+- [x] `modules/forecast.py` — deterministic forecast engine (zero LLM calls). Tests pass; swapped into `graph.py`.
+- [x] `modules/ingestion.py` — ingestion & grounding, provenance-weighted. Tests pass; swapped into `graph.py`.
+- [x] `modules/materiality.py` — materiality scoring + permission tiering. Tests pass; swapped into `graph.py`.
+- [x] `modules/planner.py` — play library + plan selection. Tests pass; swapped into `graph.py`.
+- [x] `data/benchmarks.json` — cited cold-start earnings prior exists, but is still a placeholder (all-zero rates, uncited) — see docs/SWAP_STATUS.md.
+- [x] `shared/llm.py` — single LLM call surface (`LLM_PROVIDER=bedrock|gemini|none`); `.env` auto-loaded.
+
+**All 4 worker nodes are real and swapped into `graph.py` as of 2026-09-06** (see docs/SWAP_STATUS.md for the bugs each swap surfaced — several were only catchable by actually running `python graph.py` end-to-end with `langgraph` installed, not by each module's own standalone self-test).
 
 ## Tech stack
 
@@ -37,7 +40,7 @@ authoritative "what are we building and is it done" answer, see
 - Insufficient evidence returns `UNKNOWN` explicitly; an average is never substituted for missing data.
 - No module raises exceptions; every function returns a status dict (see `shared/resilience.py`).
 - Every module must run to completion with no AWS credentials present, via its credential-free fallback path.
-- `shared/schema.py` is frozen and owned by Member 1 — nobody else edits it directly; new fields go through them.
+- `shared/schema.py` is frozen and owned by Member 1 — nobody else edits it directly; new fields go through them. **Extended 2026-09-06** with 5 optional raw-input fields (`raw_text`, `raw_delivery_rows`, `raw_source`, `raw_bank_rows`, `expenses`) after discovering LangGraph silently strips any state key not declared in the schema — these are pure caller input (only `ingestion_node` reads them, no node writes them), but without declaring them the trace-panel UI's "paste an earnings message" box had no way to reach ingestion at all. Flagging this here since it's a change to the frozen contract, not something to skim past.
 - <!-- TODO: add project-specific assumptions as they're discovered -->
 
 ## Gotchas discovered so far
@@ -47,7 +50,7 @@ authoritative "what are we building and is it done" answer, see
 - `trace` is the only field in `CashFlowState` with a reducer (`operator.add`); every other field is last-write-wins, so only one module should ever produce a given key per run — don't accidentally have two modules write the same non-trace key.
 - The materiality gate is the core differentiator, not the forecast — resist the urge to over-invest in forecasting precision at the expense of the "stay silent unless it matters" logic.
 - `MAX_REPLAN_LOOPS` (currently 2) hard-caps the low-confidence replanning cycle; a module that keeps returning low confidence will hit this ceiling and must degrade gracefully rather than loop forever.
-- Play scoring uses each cell's 25th-percentile historical figure for `impact_cents`, not the median. The median already has bad nights baked in, so presenting it as expected earnings overstates certainty on demand-dependent gig income — the same failure mode as a hallucinated number, just produced by deterministic code instead of an LLM. The full range is carried separately as `impact_range` so the renderer can state a range instead of a point estimate. **Open gap, not yet confirmed fixed:** `modules/planner.py` does not exist yet (verified 2026-09-05) — flagging this as the intended design for whoever writes it, not as something already implemented. If a future version of that module is found scoring on the median instead, note it as an open gap rather than silently "fixing" it without discussion.
+- Play scoring uses each cell's 25th-percentile historical figure for `impact_cents`, not the median. The median already has bad nights baked in, so presenting it as expected earnings overstates certainty on demand-dependent gig income — the same failure mode as a hallucinated number, just produced by deterministic code instead of an LLM. The full range is carried separately as `impact_range` so the renderer can state a range instead of a point estimate. **Open gap, confirmed NOT fixed (2026-09-06):** the real `modules/planner.py` now exists and is swapped into `graph.py`, but its cell-dependent plays (`shift_to_saturday_dinner`, `work_sunday_dinner`) score `impact_cents` off `cells[...]["median_net_per_hour_cents"]` — which is itself `modules/forecast.py`'s per-cell **median** (`build_cell_profiles()`), not a 25th-percentile figure — and there is no `impact_range` field anywhere in `generate_plans()`'s candidate dicts. This is exactly the gap this note originally warned about, now verified present in real code rather than hypothetical. Per this note's own instruction: recorded as an open gap for discussion, not silently patched.
 
 ## Governance docs (imported below, so this context is always loaded)
 

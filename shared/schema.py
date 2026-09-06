@@ -25,6 +25,18 @@ MAX_REPLAN_LOOPS = 2  # hard ceiling on the low-confidence replanning cycle
 class CashFlowState(TypedDict, total=False):
     user_id: str
 
+    # Raw input, supplied by the caller (server.py's /run `inputs`), never
+    # written by any node -- only read, by ingestion_node. LangGraph strips
+    # any state key not declared here before a node ever sees it, so these
+    # have to exist in the schema even though they're pure caller input,
+    # not something any module computes. All optional; a fresh thread with
+    # none of them present falls back to the data/benchmarks.json prior.
+    raw_text: str                 # unstructured text/screenshot content for LLM transcription
+    raw_delivery_rows: List[dict]  # structured rows for normalise_records()
+    raw_source: str                # source label for raw_delivery_rows, e.g. "partner_statement"
+    raw_bank_rows: List[dict]      # rows for parse_bank_statement()
+    expenses: List[dict]           # outgoings for add_expenses()
+
     delivery_log: List[dict]     # Member 3 (ingestion.py)
     ingest_health: dict          # Member 3 (ingestion.py)
 

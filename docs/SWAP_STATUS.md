@@ -1,5 +1,94 @@
 # SWAP_STATUS.md — module swap-in status
 
+**Update 2026-09-06 (gate + planner swap applied, all 4 nodes now real):**
+`graph.py` now imports `from modules.materiality import gate_node` and
+`from modules.planner import planner_node`. This is the first time `python
+graph.py` has actually been run to completion with `langgraph` installed
+(a `.venv` was created for this, since the system Python is
+externally-managed) — which surfaced bugs the standalone module self-tests
+never could, because they don't exercise the modules together through the
+real graph:
+
+1. **`modules/planner.py` had the same `import boto3` bug as
+   `modules/ingestion.py` before it** — module-scope import, no try/except,
+   crashes on any machine without boto3 installed. Fixed the same way:
+   `render_explanation()` now goes through `shared.llm.converse()` instead
+   of building its own Bedrock client, removing `get_bedrock_client()`
+   entirely.
+2. **`generate_plans()` crashed (`TypeError`) whenever the forecast was
+   genuinely `UNKNOWN`.** `forecast.get("shortfall_amount_cents", 0)`
+   only substitutes the default for a *missing* key — an `UNKNOWN`
+   forecast (`modules/forecast.py`) sets that key present but `None`
+   (e.g. when the only applicable play, `log_a_shift`, doesn't itself
+   depend on a shortfall existing), and `None > 0` raises. Same class of
+   bug repeated in `_template_explanation()`, `_call_llm_for_explanation()`,
+   and `render_explanation()`'s figure-verification list. Fixed all four
+   call sites to `.get(key) or 0` / `.get(key) or "an upcoming date"`.
+3. **`gate_node`/`planner_node` wrappers didn't exist** — same gap as
+   ingestion had. Added `gate_node(state)` to `materiality.py` (calls
+   `score_materiality`/`score_staleness`, sets a provisional
+   `TIER_NOTIFY`) and `planner_node(state)` to `planner.py` (calls
+   `generate_plans`/`choose_plan`, then — since this is the first point in
+   the run a specific action exists — runs it through
+   `materiality.classify_action()` to get the real `tier_level`, possibly
+   upgrading gate's provisional `TIER_NOTIFY` to `TIER_APPROVAL`).
+4. **The bigger discovery: LangGraph silently strips any state key not
+   declared in `CashFlowState`.** `graph.py`'s demo was passing
+   `inputs={"raw_delivery_rows": [...], ...}` to exercise real ingestion
+   scenarios — and `ingest_health.sources_seen` kept coming back
+   `['benchmark_prior']` regardless, proving the raw input never reached
+   `ingestion_node` at all. `shared/schema.py` (frozen, Member-1-owned)
+   had no field for caller-supplied raw input — `raw_text`,
+   `raw_delivery_rows`, `raw_source`, `raw_bank_rows`, `expenses` are
+   pure inputs nobody's node writes, but LangGraph requires them declared
+   to pass through. **Extended `CashFlowState` with these five optional
+   fields** (flagging this prominently since it touches the frozen
+   contract) — this is also what makes the trace-panel UI's new "Earnings
+   message" box (paste text → transcribed by the LLM → ingested) actually
+   work; before this fix it silently fell back to the benchmark prior no
+   matter what the UI sent.
+5. **`graph.py`'s own demo scenarios (a)/(b)/(c) relied on a `user_id`
+   string trick** (`"bob-silent-001"` → stub's hardcoded "silent"
+   scenario) that the real `gate_node` has no knowledge of — it doesn't
+   look at `user_id` at all, correctly. Rewrote the three scenarios to
+   drive real outcomes with real `raw_delivery_rows`: (a) 3 days of thin
+   history → a genuine shortfall at non-HIGH confidence → `TIER_NOTIFY`;
+   (b) 14 days of healthy recent history → `HIGH` confidence, no shortfall
+   → both `score_materiality` and `score_staleness` genuinely stay quiet;
+   (c) reuses (a)'s shortfall but pre-seeds constraints excluding every
+   reversible play in `PLAY_LIBRARY`, forcing `defer_phone_bill`
+   (irreversible + third-party) as the sole survivor → real
+   `TIER_APPROVAL` through `classify_action`, not a scripted one. (One
+   of those constraint strings, `"never defer bike servicing"`, initially
+   also excluded `defer_phone_bill` by accident — both names share the
+   word "defer" — a live example of the whole-word-overlap limitation
+   `docs/SWAP_STATUS.md` already documented below; reworded to `"never
+   touch bike servicing"`.)
+
+Verified: `python graph.py` (both `LLM_PROVIDER=none` and
+`LLM_PROVIDER=gemini`) runs all three routing paths to completion with
+all four real modules and prints `ALL THREE ROUTING PATHS DEMONSTRATED.`
+All six module self-tests (`shared/schema.py`, `shared/money.py`,
+`shared/resilience.py`, `modules/ingestion.py`, `modules/forecast.py`,
+`modules/materiality.py`, `modules/planner.py`) still pass.
+
+**Environment note:** the system Python here is Homebrew-managed and
+refuses `pip install`. Created a project `.venv` (gitignored) with
+`langgraph`, `langgraph-checkpoint`, `fastapi`, `uvicorn`, `boto3`, and
+`google-genai` installed — use `.venv/bin/python3` / `.venv/bin/uvicorn`
+to run anything in this repo, not the system `python3`.
+
+| Node in graph.py | Real module on disk? | Currently imports from |
+|---|---|---|
+| `ingestion` | ✅ real, swapped in, verified inside `graph.py` itself | `modules.ingestion.ingestion_node` |
+| `forecast` | ✅ real, swapped in and verified | `modules.forecast.forecast_node` |
+| `gate` | ✅ real, swapped in, verified inside `graph.py` itself | `modules.materiality.gate_node` |
+| `planner` | ✅ real, swapped in, verified inside `graph.py` itself | `modules.planner.planner_node` |
+
+**All 4 of 4 nodes are now real and swapped into `graph.py`.**
+
+---
+
 **Update 2026-09-06 (ingestion swap applied, bugs fixed):** `graph.py`'s
 import line now reads `from modules.ingestion import ingestion_node`.
 Landing this required three bug fixes, not just the import line:

@@ -222,28 +222,39 @@ def find_data_gaps(cells: Dict[str, dict], start_date: "datetime.date") -> List[
     """UNKNOWN cells whose weekday falls within the next GAP_LOOKAHEAD_DAYS
     of `start_date` -- these are the gaps worth interrupting Bob about,
     not every thin cell that ever existed.
+
+    Sorted soonest-first (then fewest observations as a tiebreaker): a gap
+    that occurs tomorrow blocks this run's confidence more urgently than
+    one nine days out, and a cell with zero logged shifts is a bigger hole
+    than one with a couple. This ordering is what lets a caller ask about
+    only the single most-blocking gap at a time instead of dumping the
+    whole list on Bob at once.
     """
-    upcoming_weekdays = {
-        (start_date + timedelta(days=offset)).weekday()
-        for offset in range(GAP_LOOKAHEAD_DAYS)
-    }
+    weekday_offsets: Dict[int, int] = {}
+    for offset in range(GAP_LOOKAHEAD_DAYS):
+        weekday = (start_date + timedelta(days=offset)).weekday()
+        weekday_offsets.setdefault(weekday, offset)  # first (soonest) occurrence wins
+
     gaps = []
     for key, cell in cells.items():
         if cell["status"] != "UNKNOWN":
             continue
         platform, weekday_str, time_block = key.split("|")
         weekday = int(weekday_str)
-        if weekday in upcoming_weekdays:
+        if weekday in weekday_offsets:
             gaps.append({
                 "platform": platform,
                 "weekday": weekday,
                 "time_block": time_block,
                 "observations": cell["observations"],
+                "days_until": weekday_offsets[weekday],
                 "why_it_matters": (
                     f"Falls inside the next {GAP_LOOKAHEAD_DAYS} days and only has "
                     f"{cell['observations']} logged shift(s) -- below MIN_OBSERVATIONS={MIN_OBSERVATIONS}."
                 ),
             })
+
+    gaps.sort(key=lambda g: (g["days_until"], g["observations"]))
     return gaps
 
 

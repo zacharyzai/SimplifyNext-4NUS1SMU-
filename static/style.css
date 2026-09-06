@@ -255,6 +255,35 @@ svg.icon {
   border-color: var(--primary);
 }
 
+.field textarea {
+  font: inherit;
+  font-size: 15px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+  min-height: 44px;
+  width: 100%;
+  transition: border-color var(--duration) var(--ease);
+}
+
+.field textarea:focus-visible {
+  border-color: var(--primary);
+}
+
+.llm-field {
+  flex-basis: 100%;
+}
+
+.field-hint {
+  text-transform: none;
+  font-weight: 400;
+  letter-spacing: normal;
+  color: var(--text-faint);
+}
+
 .button-row {
   display: flex;
   gap: var(--space-2);
@@ -427,12 +456,6 @@ section.panel {
 
 .field-block {
   margin-bottom: var(--space-5);
-  animation: rise var(--duration) var(--ease);
-}
-
-@keyframes rise {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .field-block h3 {
@@ -510,12 +533,12 @@ section.panel {
   background: color-mix(in srgb, var(--primary) 8%, var(--surface));
   border-radius: var(--radius-md);
   padding: var(--space-4);
-  animation: rise var(--duration) var(--ease);
 }
 
 #answer-box .prompt-title, #approval-bar .prompt-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin: 0 0 var(--space-3) 0;
   font-size: 14px;
@@ -523,6 +546,12 @@ section.panel {
 }
 
 #answer-box .prompt-title svg.icon, #approval-bar .prompt-title svg.icon { color: var(--primary); }
+
+.prompt-progress {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
 
 #answer-box textarea {
   width: 100%;
@@ -539,13 +568,10 @@ section.panel {
 
 #answer-box textarea:focus-visible { border-color: var(--primary); }
 
-#open-questions-list {
+#open-question-text {
   margin: 0 0 var(--space-3) 0;
-  padding-left: 20px;
-  font-size: 14px;
+  font-size: 15px;
 }
-
-#open-questions-list li { margin-bottom: var(--space-1); }
 
 .approval-actions, .answer-actions {
   display: flex;
@@ -572,7 +598,6 @@ section.panel {
   border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--surface-2);
-  animation: rise var(--duration) var(--ease);
 }
 
 .trace-card.confidence-HIGH { border-left-color: var(--success); }

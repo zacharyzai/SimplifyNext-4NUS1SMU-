@@ -45,6 +45,10 @@
       <span>Reset demo</span>
     </button>
   </div>
+  <div class="field llm-field">
+    <label for="raw-text">Earnings message <span class="field-hint">(optional — transcribed by the LLM)</span></label>
+    <textarea id="raw-text" rows="2" placeholder="Paste a payout message, e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot;"></textarea>
+  </div>
 </div>
 <div id="status-line" role="status" aria-live="polite">Ready.</div>
 
@@ -67,10 +71,11 @@
       <div id="answer-box">
         <p class="prompt-title">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 8v4.5"/></svg>
-          The agent isn't confident yet — it's asking:
+          <span>The agent isn't confident yet — it's asking:</span>
+          <span class="prompt-progress" id="open-question-progress" hidden></span>
         </p>
-        <ul id="open-questions-list"></ul>
-        <textarea id="answer-text" placeholder="Type an answer covering the question(s) above..."></textarea>
+        <p id="open-question-text"></p>
+        <textarea id="answer-text" placeholder="Type an answer covering the question above..."></textarea>
         <div class="answer-actions">
           <button class="primary" id="btn-submit-answer" type="button">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-7-6 16-3-6-7-3Z"/></svg>

@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.money import format_cents
 from shared.resilience import resilient_call
+from shared.schema import TIER_APPROVAL, TIER_NOTIFY
+from modules.materiality import classify_action
 
 _CONSTRAINT_STOPWORDS = {
     "never", "touch", "the", "a", "an", "do", "not", "don't", "dont",
@@ -177,7 +179,10 @@ def generate_plans(forecast, profile, cells, user_constraints):
     able to cite what Sunday dinner has actually paid him -- a
     recommendation that can't cite its basis is withheld, not softened.
     """
-    shortfall_amount_cents = forecast.get("shortfall_amount_cents", 0)
+    # .get(..., 0) only covers a MISSING key -- an UNKNOWN-confidence
+    # forecast (modules/forecast.py) sets this key present but None, which
+    # would otherwise crash the ">" comparison below.
+    shortfall_amount_cents = forecast.get("shortfall_amount_cents") or 0
     candidates = []
     rejected = []
 
@@ -236,19 +241,7 @@ def choose_plan(candidate_plans):
     """
     return candidate_plans[0] if candidate_plans else None
 
-import boto3
-
-MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-AWS_REGION = "ap-southeast-1"
-
-
-def get_bedrock_client():
-    session = boto3.Session(
-        profile_name=os.getenv("AWS_PROFILE", "workshop"),
-        region_name=os.getenv("AWS_DEFAULT_REGION", AWS_REGION),
-    )
-    return session.client("bedrock-runtime")
-
+from shared.llm import converse
 
 RENDER_SYSTEM_PROMPT = (
     "You are given a decision that has already been made and figures that "
@@ -260,55 +253,56 @@ RENDER_SYSTEM_PROMPT = (
 
 
 def _template_explanation(chosen_plan, forecast):
+    # .get(key, default) only covers a MISSING key -- an UNKNOWN-confidence
+    # forecast (modules/forecast.py) sets these keys present but None (e.g.
+    # when the chosen play, like log_a_shift, doesn't itself depend on a
+    # shortfall existing), which "or" catches and a bare default wouldn't.
+    shortfall_amount_cents = forecast.get("shortfall_amount_cents") or 0
+    shortfall_date = forecast.get("shortfall_date") or "an upcoming date"
     return (
-        f"You're projected to run short by {format_cents(forecast.get('shortfall_amount_cents', 0))} "
-        f"around {forecast.get('shortfall_date', 'an upcoming date')}. "
+        f"You're projected to run short by {format_cents(shortfall_amount_cents)} "
+        f"around {shortfall_date}. "
         f"I'd suggest: {chosen_plan['name']}, which could recover about "
         f"{format_cents(chosen_plan['impact_cents'])}. {chosen_plan['why']}"
     )
 
 
-def _call_bedrock_for_explanation(chosen_plan, forecast, bedrock_client):
+def _call_llm_for_explanation(chosen_plan, forecast):
+    shortfall_amount_cents = forecast.get("shortfall_amount_cents") or 0
+    shortfall_date = forecast.get("shortfall_date") or "an upcoming date"
     user_text = (
         f"Chosen plan: {chosen_plan['name']}. "
         f"Estimated impact: {format_cents(chosen_plan['impact_cents'])}. "
-        f"Projected shortfall: {format_cents(forecast.get('shortfall_amount_cents', 0))} "
-        f"around {forecast.get('shortfall_date')}. "
+        f"Projected shortfall: {format_cents(shortfall_amount_cents)} "
+        f"around {shortfall_date}. "
         f"Why: {chosen_plan['why']}"
     )
-    response = bedrock_client.converse(
-        modelId=MODEL_ID,
-        system=[{"text": RENDER_SYSTEM_PROMPT}],
-        messages=[{"role": "user", "content": [{"text": user_text}]}],
-        inferenceConfig={"temperature": 0, "maxTokens": 300},
-    )
-    usage = response.get("usage", {})
-    print(f"Bedrock usage -- input tokens: {usage.get('inputTokens')}, output tokens: {usage.get('outputTokens')}")
-    return response["output"]["message"]["content"][0]["text"].strip()
+    text = converse(RENDER_SYSTEM_PROMPT, user_text)
+    if text is None:
+        raise RuntimeError("no LLM provider available")
+    return text
 
 
-def render_explanation(chosen_plan, forecast, trace_records, bedrock_client):
+def render_explanation(chosen_plan, forecast, trace_records):
     """Sends the ALREADY-CHOSEN plan and ALREADY-CALCULATED figures to
-    Bedrock for a 3-sentence explanation. The system prompt is a REQUEST,
-    not a guarantee -- so after the call, every money figure sent in is
-    checked against the response verbatim. If even one is missing or
-    altered, the model's output is discarded and the deterministic
-    template is used instead. This verification step is what turns "we
-    told it not to change numbers" into "we know it didn't."
+    the LLM (via shared.llm.converse, whichever provider is configured)
+    for a 3-sentence explanation. The system prompt is a REQUEST, not a
+    guarantee -- so after the call, every money figure sent in is checked
+    against the response verbatim. If even one is missing or altered, the
+    model's output is discarded and the deterministic template is used
+    instead. This verification step is what turns "we told it not to
+    change numbers" into "we know it didn't."
     """
     if chosen_plan is None:
         return "No plan is currently proposed."
 
-    figures_to_check = [format_cents(forecast.get("shortfall_amount_cents", 0)), format_cents(chosen_plan["impact_cents"])]
+    figures_to_check = [format_cents(forecast.get("shortfall_amount_cents") or 0), format_cents(chosen_plan["impact_cents"])]
     template = _template_explanation(chosen_plan, forecast)
 
-    if bedrock_client is None:
-        return template
-
     result = resilient_call(
-        _call_bedrock_for_explanation,
-        chosen_plan, forecast, bedrock_client,
-        retries=1, fallback=lambda: template, tool_name="bedrock_render_explanation",
+        _call_llm_for_explanation,
+        chosen_plan, forecast,
+        retries=1, fallback=lambda: template, tool_name="llm_render_explanation",
     )
 
     if not result["ok"]:
@@ -362,6 +356,57 @@ def build_trace(candidate_plans, rejected, chosen_plan, tool_health=None, user_c
         "concluded": concluded,
         "confidence": "LOW" if degraded else "HIGH",
         "degraded": degraded,
+    }
+
+
+def planner_node(state: dict):
+    """Real planner node for graph.py. Generates and scores plays against
+    Member 2's forecast/cells, picks one, then -- because this is the
+    first point in the run a specific action actually exists -- runs it
+    through materiality.classify_action() to get the real tier_level
+    (may upgrade gate_node's provisional TIER_NOTIFY to TIER_APPROVAL, or
+    stay put). If every candidate is excluded, chosen_plan is explicitly
+    None (not omitted, so a stale plan from a previous run on this thread
+    doesn't stay checkpointed) and tier_level downgrades to TIER_NOTIFY --
+    there's no plan left to halt for approval on.
+    """
+    forecast = state.get("forecast") or {}
+    cells = state.get("cells") or {}
+    user_constraints = state.get("user_constraints", [])
+    profile = {"median_daily_cents": forecast.get("daily_income_baseline_cents", 0)}
+
+    candidate_plans, rejected_plans = generate_plans(forecast, profile, cells, user_constraints)
+    chosen_plan = choose_plan(candidate_plans)
+
+    tier_result = None
+    if chosen_plan is not None:
+        action = {
+            "type": chosen_plan["action_type"],
+            "amount_cents": chosen_plan["impact_cents"],
+            "reversible": chosen_plan["reversible"],
+            "affects_third_party": chosen_plan["affects_third_party"],
+            "description": chosen_plan["name"],
+        }
+        tier_result = classify_action(action, forecast, user_constraints)
+        tier_level = tier_result["tier_level"]
+    else:
+        tier_level = TIER_NOTIFY
+
+    awaiting_approval = tier_level == TIER_APPROVAL
+    explanation = render_explanation(chosen_plan, forecast, [])
+
+    trace = build_trace(candidate_plans, rejected_plans, chosen_plan, None, user_constraints)
+    if tier_result is not None:
+        trace["checked"].append(f"permission tier: rule '{tier_result['rule_fired']}' -> tier {tier_level}")
+
+    return {
+        "candidate_plans": candidate_plans,
+        "rejected_plans": rejected_plans,
+        "chosen_plan": chosen_plan,
+        "explanation": explanation,
+        "tier_level": tier_level,
+        "awaiting_approval": awaiting_approval,
+        "trace": [trace],
     }
 
 
@@ -422,18 +467,13 @@ if __name__ == "__main__":
     print("STEP 3: render_explanation() -- the only LLM call in this file")
     print("=" * 60)
 
-    try:
-        client = get_bedrock_client()
-    except Exception:
-        client = None
-
-    explanation = render_explanation(chosen, forecast, [], client)
+    explanation = render_explanation(chosen, forecast, [])
     print(f"\nExplanation:\n  {explanation}")
 
     assert format_cents(forecast["shortfall_amount_cents"]) in explanation
     assert format_cents(chosen["impact_cents"]) in explanation
 
-    print("\nSTEP 3 COMPLETED (ran to completion with no AWS credentials present)")
+    print("\nSTEP 3 COMPLETED (ran to completion with no LLM provider configured)")
 
     print("\n" + "=" * 60)
     print("STEP 4: build_trace() + user_constraint rejection + full test suite")
@@ -455,8 +495,8 @@ if __name__ == "__main__":
     for k, v in trace.items():
         print(f"  {k}: {v}")
 
-    no_client_explanation = render_explanation(chosen, forecast, [], None)
-    assert format_cents(chosen["impact_cents"]) in no_client_explanation
+    no_provider_explanation = render_explanation(chosen, forecast, [])
+    assert format_cents(chosen["impact_cents"]) in no_provider_explanation
 
     assert sunday_rejection["reason"] == "insufficient_history"
     assert choose_plan([]) is None, "no candidates -> None, never an invented plan"

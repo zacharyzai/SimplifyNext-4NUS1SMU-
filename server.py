@@ -9,6 +9,7 @@ RULE FOR THE WHOLE FILE: no endpoint may ever return a 500. The demo must
 never show a stack trace to a judge, so every handler is wrapped to return
 a 200 with {"ok": false, "error": str} on any failure instead.
 """
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
@@ -110,36 +111,46 @@ def approve(req: ApproveRequest) -> Dict[str, Any]:
 
 @app.post("/answer")
 def answer(req: AnswerRequest) -> Dict[str, Any]:
-    """Feed Bob's real answers back into the replanning loop.
+    """Feed Bob's real answer back into the replanning loop.
 
-    NOTE for the swap-in: right now clarify_node (graph.py) simulates its
-    own answers and resolves the loop within a single run_agent() call, so
-    a thread is never actually left paused waiting on this endpoint. Once
-    a real UI needs to ask Bob live, add "clarify" to the graph's
-    interrupt_before list (alongside "execute_node") -- this handler
-    already writes the answers into the checkpoint and resumes the graph,
-    so it will start working unchanged the moment that pause exists.
+    clarify_node is not in the graph's interrupt_before list, so a thread
+    is never actually left paused waiting on this endpoint -- the loop
+    already resolves (up to MAX_REPLAN_LOOPS) inside a single run_agent()
+    call, simulating its own answers. So there is nothing to "resume"
+    here; what Bob's real answer needs is a NEW run_agent() call on this
+    thread, with the answer fed in as raw_text -- the same field the
+    trace-panel UI's "earnings message" box uses. START always leads to
+    ingestion, so this naturally re-enters at ingestion_node (the
+    clarify_node -> ingestion_node edge), giving Bob's answer a real
+    chance to change the forecast/plan instead of just being logged.
     """
     try:
         config = {"configurable": {"thread_id": req.thread_id}}
         snapshot = agent_graph.graph.get_state(config)
+
         trace_record = {
             "node": "answer_endpoint",
-            "ts": __import__("datetime").datetime.now(
-                __import__("datetime").timezone.utc
-            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "checked": list(req.answers.keys()),
             "found": {"answers": req.answers},
-            "concluded": f"Received Bob's answer(s) to {len(req.answers)} open question(s).",
+            "concluded": f"Received Bob's answer(s) to {len(req.answers)} open question(s); re-running with it as new ingestion input.",
             "confidence": "HIGH",
             "degraded": False,
         }
         agent_graph.graph.update_state(config, {"trace": [trace_record]})
 
-        if snapshot.next:  # the graph is genuinely paused -- resume it
-            state = agent_graph.graph.invoke(None, config=config)
-        else:  # nothing paused; just report current state plus the logged answer
+        if snapshot.next:
+            # Genuinely paused -- that's a Tier 2 approval halt, which
+            # /approve resumes, not /answer. Nothing more to do than log
+            # the answer above; return the (still-paused) state as-is.
             state = agent_graph.graph.get_state(config).values
+        else:
+            combined_answer = " ".join(v for v in req.answers.values() if v).strip()
+            state = agent_graph.run_agent(
+                user_id=snapshot.values.get("user_id", ""),
+                thread_id=req.thread_id,
+                inputs={"raw_text": combined_answer} if combined_answer else None,
+            )
         return _run_response(state)
     except Exception as exc:  # noqa: BLE001
         return _error_response(exc)

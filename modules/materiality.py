@@ -16,7 +16,7 @@ Rules for this whole file:
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -326,6 +326,72 @@ def build_trace(materiality, staleness, tier_result=None):
         "confidence": "HIGH",
         "degraded": False,
     }
+
+
+def gate_node(state: dict):
+    """Real materiality gate node for graph.py. Reads Member 2's forecast
+    and Member 3's ingest_health off state, decides whether to fire, and
+    sets a provisional tier_level (TIER_NOTIFY) -- planner_node is what
+    upgrades this to TIER_APPROVAL once it has a specific chosen_plan to
+    run through classify_action(), since no action exists yet here.
+
+    KNOWN LIMITATION: CashFlowState has no dedicated field for "the last
+    alert that fired," so cooldown/novelty suppression starts fresh every
+    run rather than persisting across runs on the same thread. Flagged
+    here rather than silently working around it by adding an undeclared
+    state key (shared/schema.py is frozen, Member 1 owned).
+    """
+    forecast = state.get("forecast") or {}
+    ingest_health = state.get("ingest_health") or {}
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    profile = {"median_daily_cents": forecast.get("daily_income_baseline_cents", 0)}
+    staleness_profile = {"days_since_last_observation": ingest_health.get("days_since_last_observation", 0)}
+
+    upcoming_bills = []
+    gen_from = forecast.get("generated_from_date")
+    if gen_from:
+        try:
+            base_date = datetime.strptime(gen_from, "%Y-%m-%d")
+            for bill in forecast.get("bills_considered") or []:
+                due = base_date + timedelta(days=bill.get("day_offset", 0))
+                upcoming_bills.append({
+                    "name": bill.get("name", "bill"),
+                    "due_date": due.strftime("%Y-%m-%d"),
+                    "amount_cents": bill.get("amount_cents", 0),
+                })
+        except ValueError:
+            pass
+
+    materiality = score_materiality(forecast, profile, None, today)
+    staleness = score_staleness(staleness_profile, upcoming_bills, today, None)
+
+    fire = materiality["fire"] or staleness["fire"]
+    materiality_flag = materiality if materiality["fire"] else staleness if staleness["fire"] else materiality
+
+    result = {
+        "materiality_flag": materiality_flag,
+        "tier_level": TIER_NOTIFY,
+        "trace": [build_trace(materiality, staleness)],
+    }
+
+    if not fire:
+        # route_after_gate sends a silent run straight to END -- planner_node
+        # never runs, so it never gets the chance to clear its own fields.
+        # Without this, a chosen_plan/explanation from a PREVIOUS run on
+        # this thread (back when something WAS material) stays checkpointed
+        # forever and renders as if it were this run's answer -- the same
+        # stale-plan failure mode planner_node's own "no candidates" path
+        # already guards against, just one step earlier in the graph.
+        result.update({
+            "candidate_plans": [],
+            "rejected_plans": [],
+            "chosen_plan": None,
+            "explanation": None,
+            "awaiting_approval": False,
+        })
+
+    return result
 
 
 if __name__ == "__main__":

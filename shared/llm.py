@@ -35,7 +35,7 @@ _load_dotenv()
 MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 AWS_REGION = "ap-southeast-1"
 AWS_PROFILE = "workshop"
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 
 
 def _bedrock_converse(system_prompt: str, user_text: str):
