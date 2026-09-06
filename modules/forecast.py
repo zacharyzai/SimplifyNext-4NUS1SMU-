@@ -63,16 +63,33 @@ MEDIUM_CONFIDENCE_PRECISION = 0.5
 # Chosen so a purely self-reported (0.4) history can never read HIGH, per
 # HACKATHON_OBJECTIVES.md §7.2 step 4's acceptance test.
 
-HIGH_CONFIDENCE_MIN_DAYS = 14
+HIGH_CONFIDENCE_MIN_DAYS = 21
 # HIGH confidence additionally requires at least this many distinct
 # observed days -- high-precision sources over too short a window are
-# still a thin sample, not a confident forecast.
+# still a thin sample, not a confident forecast. Set to 21 (3 weeks), not
+# 14, because it has to be consistent with MIN_OBSERVATIONS=3 above: a
+# gig worker who drives every day spreads their history evenly across all
+# 7 weekdays, so each (platform, weekday, time_block) cell only picks up
+# one new observation per week. 14 days gives every cell just 2
+# observations -- always UNKNOWN, never enough to clear MIN_OBSERVATIONS,
+# so HIGH would be mathematically unreachable for that (common) pattern
+# even with perfectly clean data. 21 days guarantees 3 occurrences of the
+# least-frequent weekday, which is the actual bottleneck this number needs
+# to clear.
 
 PESSIMISTIC_HAIRCUT = 0.6
 # The "stress case" projection assumes Bob only earns this fraction of his
 # median daily income each day -- a deliberately conservative second read
 # alongside the baseline projection (HACKATHON_OBJECTIVES.md §1.2: "the
 # pessimistic projection").
+
+ASSUMED_SHIFT_HOURS = 4.0
+# Used ONLY for a cold-start estimate (see _cold_start_daily_cents below)
+# when Bob has zero dated earnings history and the only evidence is the
+# benchmark_prior cold-start rate (data_source_registry.md). Benchmark
+# rows carry a $/hour rate, not a $/day one; this is the assumed shift
+# length used to turn that rate into a rough daily figure, matching the
+# typical shift length used in this file's own synthetic fixtures.
 
 DEMO_STARTING_BALANCE_CENTS = 2_000
 DEMO_BILLS: List[Dict[str, Any]] = [
@@ -269,6 +286,33 @@ def build_open_questions(data_gaps: List[dict]) -> List[str]:
     return questions
 
 
+def _cold_start_daily_cents(delivery_log: List[dict]) -> Optional[int]:
+    """A rough daily-income estimate from benchmark_prior rows alone, used
+    only when there is NO dated history at all (see run_forecast below).
+
+    This is the fix for a real gap: before it existed, a brand-new thread
+    with zero logged shifts fell all the way back to the cited
+    data/benchmarks.json prior, correctly built cells from it, and then
+    run_forecast() ignored those cells entirely and gave up with "cannot
+    project" -- even though the cold-start prior exists specifically so a
+    first-cut, low-confidence forecast IS possible on day one
+    (data_source_registry.md: "forecast confidence is capped low so the
+    replan loop can ask Bob for input", not "refuse to forecast at all").
+
+    Returns None (never 0) when there are no benchmark rows to estimate
+    from -- run_forecast still correctly returns UNKNOWN in that case,
+    since there is genuinely nothing to go on.
+    """
+    rates = [
+        _recompute_net_cents(r) / r["hours"]
+        for r in delivery_log
+        if r.get("source") == "benchmark_prior" and r.get("hours", 0) and r["hours"] > 0
+    ]
+    if not rates:
+        return None
+    return round(statistics.mean(rates) * ASSUMED_SHIFT_HOURS)
+
+
 # --- Step 3: 14-day projection + pessimistic stress case --------------------
 
 def _project(daily_income_cents: int, start_date, bills: List[dict],
@@ -326,8 +370,16 @@ def determine_confidence(days_observed: int, avg_precision: Optional[float],
                           data_gaps: List[dict]) -> tuple:
     """Returns (confidence, reason). Never HIGH on thin or low-provenance
     history, regardless of how clean the arithmetic looks.
+
+    Only `avg_precision is None` (delivery_log genuinely has no records at
+    all) returns UNKNOWN here -- `days_observed` alone used to gate this
+    too, but days_observed only counts DATED rows, and a benchmark_prior
+    cold start deliberately has none (data/benchmarks.json rows have
+    date: None). That made a cold-start estimate always read UNKNOWN
+    regardless of its precision. A cold start with real precision (0.2)
+    correctly falls through to the LOW branch below instead.
     """
-    if days_observed == 0 or avg_precision is None:
+    if avg_precision is None:
         return "UNKNOWN", "No earnings history to forecast from."
 
     if avg_precision < MEDIUM_CONFIDENCE_PRECISION:
@@ -388,7 +440,15 @@ def run_forecast(delivery_log: List[dict]) -> dict:
             profile["days_observed"], avg_precision, data_gaps
         )
 
+        cold_start_daily = None
         if profile["median_daily_cents"] is None:
+            cold_start_daily = _cold_start_daily_cents(delivery_log)
+
+        if profile["median_daily_cents"] is None and cold_start_daily is None:
+            # Truly nothing to go on -- no dated history AND no benchmark
+            # prior either. This is the only case that still refuses to
+            # project (rule #4: insufficient evidence returns UNKNOWN,
+            # never a fabricated number).
             forecast = {
                 "generated_from_date": start_date.isoformat(),
                 "horizon_days": PROJECTION_DAYS,
@@ -404,7 +464,17 @@ def run_forecast(delivery_log: List[dict]) -> dict:
             confidence = "UNKNOWN"
             confidence_reason = forecast["confidence_reason"]
         else:
-            baseline_daily = profile["median_daily_cents"]
+            baseline_daily = profile["median_daily_cents"] if profile["median_daily_cents"] is not None else cold_start_daily
+            if profile["median_daily_cents"] is None:
+                # confidence/confidence_reason were already computed above from
+                # avg_precision alone (0.2 for a pure benchmark_prior log) --
+                # just prepend the cold-start disclosure so it's clear this
+                # projection isn't from Bob's own logged shifts.
+                confidence_reason = (
+                    "Cold start: no dated earnings history yet, so this projection uses "
+                    f"the cited data/benchmarks.json prior (${baseline_daily / 100:,.2f}/day estimate) "
+                    "instead of Bob's own data. " + confidence_reason
+                )
             pessimistic_daily = round(baseline_daily * PESSIMISTIC_HAIRCUT)
 
             baseline = _project(baseline_daily, start_date, DEMO_BILLS, DEMO_STARTING_BALANCE_CENTS)
@@ -599,5 +669,38 @@ if __name__ == "__main__":
     node_update = forecast_node({"delivery_log": log_28})
     assert set(node_update.keys()) == {"forecast", "cells", "data_gaps", "open_questions", "trace"}
     assert isinstance(node_update["trace"], list) and len(node_update["trace"]) == 1
+
+    # --- Step 6: cold start (benchmark_prior only, zero dated history) ------
+    # Matches the exact row shape modules/ingestion.py's load_benchmark_prior()
+    # produces: date=None, hours=1.0, net_cents already IS the cited rate.
+    benchmark_only_log = [
+        {"date": None, "platform": "Grab", "time_block": "dinner", "weekday": 5,
+         "gross_cents": 0, "tip_cents": 0, "platform_fee_cents": 0,
+         "net_cents": 1500, "trips": 0, "hours": 1.0,
+         "source": "benchmark_prior", "precision": 0.2},
+        {"date": None, "platform": "Grab", "time_block": "lunch", "weekday": 2,
+         "gross_cents": 0, "tip_cents": 0, "platform_fee_cents": 0,
+         "net_cents": 1100, "trips": 0, "hours": 1.0,
+         "source": "benchmark_prior", "precision": 0.2},
+    ]
+    cold_start_result = run_forecast(benchmark_only_log)
+    cold_start_forecast = cold_start_result["forecast"]
+    # Before this fix, a benchmark_prior-only log produced
+    # confidence=UNKNOWN and "cannot project" -- ignoring the two cells it
+    # just built. It must now produce an actual (low-confidence) forecast.
+    assert cold_start_forecast["confidence"] not in ("UNKNOWN", "HIGH"), (
+        f"expected a cold start to forecast at LOW/MEDIUM confidence, not "
+        f"{cold_start_forecast['confidence']}"
+    )
+    assert cold_start_forecast["daily_income_baseline_cents"] == round(((1500 + 1100) / 2) * ASSUMED_SHIFT_HOURS)
+    assert "Cold start" in cold_start_forecast["confidence_reason"]
+    # Truly empty (no dated history AND no benchmark rows) must still
+    # refuse to project -- this fix only widens what counts as usable
+    # evidence, it does not remove the "insufficient evidence -> UNKNOWN"
+    # rule for when there really is none.
+    assert run_forecast([])["forecast"]["confidence"] == "UNKNOWN"
+    print(f"Step 6 -- cold start (benchmark_prior only) now forecasts instead of giving up: "
+          f"{cold_start_forecast['confidence']} confidence, "
+          f"${cold_start_forecast['daily_income_baseline_cents'] / 100:,.2f}/day estimate")
 
     print("\nALL FORECAST TESTS PASSED")

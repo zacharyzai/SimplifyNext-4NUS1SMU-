@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>Agentic Cash-Flow Copilot for Bob</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23111'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' fill='%23fff' font-family='sans-serif'%3E%24%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -18,11 +19,11 @@
     <p>Gig-income shortfall detection for Bob — every step it takes is shown on the right.</p>
   </div>
   <div class="id-fields">
-    <label class="id-field">
+    <label class="id-field" title="A separate, independent conversation. The agent remembers everything on this thread — try a new name here to start fresh without losing bob-001's history.">
       <span>Thread</span>
       <input id="thread-id" type="text" value="bob-001" autocomplete="off">
     </label>
-    <label class="id-field">
+    <label class="id-field" title="Which gig worker's earnings data this run reads. Usually the same as Thread.">
       <span>User</span>
       <input id="user-id" type="text" value="bob-001" autocomplete="off">
     </label>
@@ -64,14 +65,16 @@
     <div class="card question-card" id="question-card" hidden>
       <span class="eyebrow eyebrow-accent">Open question · answer to continue <span class="open-question-progress" id="open-question-progress" hidden></span></span>
       <p class="question-text" id="open-question-text"></p>
-      <textarea id="answer-text" rows="2" placeholder="Type your answer"></textarea>
+      <p class="field-explainer">Must include an actual date and a dollar amount — e.g. "On 2026-09-02, I made $50, 3 trips, 2 hours." A reply like "$50" alone will be rejected; it won't guess the date.</p>
+      <textarea id="answer-text" rows="2" placeholder="e.g. &quot;On 2026-09-02, I made $50, 3 trips, 2 hours.&quot;"></textarea>
       <button class="btn btn-dark" id="btn-submit-answer" type="button">Submit answer</button>
     </div>
 
     <div class="card llm-card">
       <span class="eyebrow">Earnings message <span class="eyebrow-hint">optional — transcribed by the LLM</span></span>
-      <p class="field-explainer">Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it.</p>
+      <p class="field-explainer">Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it. Must include an actual date (e.g. 2026-09-05) — it won't guess "yesterday" or a weekday.</p>
       <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot;"></textarea>
+      <button class="btn btn-dark" id="btn-submit-earnings" type="button">Log earnings &amp; run agent</button>
     </div>
 
     <div class="endpoints-footer">
@@ -84,7 +87,6 @@
     <div class="sticky-controls">
       <div class="control-row">
         <button class="btn btn-dark" id="btn-run" type="button">Run agent</button>
-        <button class="btn btn-outline" id="btn-simulate" type="button">Simulate next Wednesday</button>
         <span class="spacer"></span>
         <span class="live-indicator"><span class="live-dot" id="live-dot"></span><span id="live-text">idle</span></span>
         <button class="btn btn-ghost" id="btn-reset" type="button">Reset demo</button>

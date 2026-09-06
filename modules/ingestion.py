@@ -423,6 +423,19 @@ def ingestion_node(state: dict):
     If none of these yield any records, falls back to the benchmarks.json
     cold-start prior rather than returning an empty, UNKNOWN-forcing log.
 
+    ACCUMULATES, does not overwrite: `delivery_log` has no reducer in
+    CashFlowState, so a naive node would silently replace Bob's entire
+    logged history with just whatever was submitted THIS run -- a second
+    "Run agent" with a new earnings message would erase the first one.
+    This node instead reads back its own previous output (`state.get
+    ("delivery_log")`), keeps every real record from it, and adds this
+    run's new ones on top (de-duplicated by (date, platform, gross_cents,
+    trips), so accidentally resubmitting the same shift twice doesn't
+    double-count it). A benchmark_prior fallback from an earlier cold
+    start is dropped the moment real data exists -- it was only ever a
+    stand-in for missing history, never something to keep averaging in
+    once Bob has logged anything real.
+
     When raw_text is present (most often Bob's real answer to a clarify
     question, injected by server.py's /answer) but extract_from_text()
     can't pull a usable figure out of it, that fact is surfaced directly
@@ -431,49 +444,63 @@ def ingestion_node(state: dict):
     question with no explanation reads as a bug even when it's actually
     just an unparseable answer.
     """
-    delivery_log: List[dict] = []
+    new_records: List[dict] = []
     rows_in = 0
     rejection_reasons: List[str] = []
-    sources_seen: List[str] = []
     answer_text_unusable = False
 
     if state.get("raw_delivery_rows"):
         records, health = normalise_records(
             state["raw_delivery_rows"], source=state.get("raw_source", "self_reported")
         )
-        delivery_log += records
+        new_records += records
         rows_in += health["rows_in"]
         rejection_reasons += health["rejection_reasons"]
-        sources_seen += health["sources_seen"]
 
     if state.get("raw_bank_rows"):
         records, health = parse_bank_statement(state["raw_bank_rows"], today=None)
-        delivery_log += records
+        new_records += records
         rows_in += health["rows_in"]
         rejection_reasons += health["rejection_reasons"]
-        sources_seen += health["sources_seen"]
 
     if state.get("raw_text"):
         transcribed = extract_from_text(state["raw_text"])
         if transcribed:
-            delivery_log += transcribed
-            sources_seen.append("screenshot_ocr")
+            new_records += transcribed
             rows_in += len(transcribed)  # else rows_rejected = rows_in - accepted goes negative
         else:
             answer_text_unusable = True
 
     if state.get("expenses"):
-        delivery_log = add_expenses(delivery_log, state["expenses"])
+        new_records = add_expenses(new_records, state["expenses"])
+
+    previous_log = state.get("delivery_log") or []
+    carried_forward = [r for r in previous_log if r.get("source") != "benchmark_prior"]
+
+    delivery_log: List[dict] = []
+    if new_records or carried_forward:
+        dedup_seen = set()
+        for record in carried_forward + new_records:
+            key = (record.get("date"), record.get("platform"), record.get("gross_cents"), record.get("trips"))
+            if key in dedup_seen:
+                continue
+            dedup_seen.add(key)
+            delivery_log.append(record)
+
+    total_considered = rows_in + len(carried_forward)
 
     if not delivery_log:
         for platform in ("Grab", "foodpanda", "Lalamove"):
             delivery_log += load_benchmark_prior("data/benchmarks.json", platform)
         if delivery_log:
-            sources_seen.append("benchmark_prior")
-            rows_in += len(delivery_log)  # every benchmark row is "in" and accepted, none rejected
+            total_considered += len(delivery_log)  # every benchmark row is "in" and accepted, none rejected
 
-    health = _build_health([None] * rows_in, delivery_log, rejection_reasons, source="mixed")
-    health["sources_seen"] = sources_seen or ["none"]
+    health = _build_health([None] * total_considered, delivery_log, rejection_reasons, source="mixed")
+    # Reflects every source actually present across the ACCUMULATED log, not
+    # just what this one run contributed -- e.g. a thread with a partner
+    # statement from last week and a screenshot from today correctly shows
+    # both, not whichever one happened to be submitted most recently.
+    health["sources_seen"] = sorted({r.get("source", "unknown") for r in delivery_log}) if delivery_log else ["none"]
 
     trace_record = build_trace(health)
     if answer_text_unusable:
@@ -654,6 +681,72 @@ if __name__ == "__main__":
     )
     mixed_health = _build_health(mixed_a + mixed_b, mixed_a + mixed_b, [], "mixed")
     assert SOURCE_PRECISION["self_reported"] < mixed_health["weighted_precision"] < SOURCE_PRECISION["partner_statement"]
+
+    print("\n" + "=" * 60)
+    print("STEP 6: ingestion_node() ACCUMULATES across two calls, not overwrites")
+    print("=" * 60)
+    print("Previously each call rebuilt delivery_log from scratch off only THIS")
+    print("run's raw input -- a second submission silently erased the first one.")
+
+    node_state_run1 = {
+        "raw_delivery_rows": [
+            {"date": "2026-08-15", "platform": "Grab", "start_hour": 18,
+             "gross_cents": "70.00", "tip_cents": "5.00", "platform_fee_cents": "6.00",
+             "trips": 5, "hours": 4.0},
+        ],
+        "raw_source": "self_reported",
+    }
+    node_result_1 = ingestion_node(node_state_run1)
+    assert len(node_result_1["delivery_log"]) == 1, "first submission should log exactly 1 record"
+
+    # Simulate what the checkpointer does between two graph.invoke() calls on
+    # the same thread: this node's own previous output (delivery_log) is
+    # exactly what a second call would see in `state`, PLUS a fresh raw_text
+    # submission (a second shift, submitted separately -- this is exactly
+    # the "3 Saturday dinners in one message" scenario, done as 2 SEPARATE
+    # messages instead, which used to silently lose the first one).
+    node_state_run2 = {
+        "delivery_log": node_result_1["delivery_log"],
+        "raw_delivery_rows": [
+            {"date": "2026-08-22", "platform": "Grab", "start_hour": 18,
+             "gross_cents": "72.00", "tip_cents": "4.00", "platform_fee_cents": "6.00",
+             "trips": 5, "hours": 4.0},
+        ],
+        "raw_source": "self_reported",
+    }
+    node_result_2 = ingestion_node(node_state_run2)
+    assert len(node_result_2["delivery_log"]) == 2, (
+        f"second submission should ADD to the first, giving 2 total records, "
+        f"got {len(node_result_2['delivery_log'])} -- the first shift was lost"
+    )
+    dates_on_file = sorted(r["date"] for r in node_result_2["delivery_log"])
+    assert dates_on_file == ["2026-08-15", "2026-08-22"], "both separately-submitted shifts must both be present"
+
+    # Resubmitting the EXACT same shift a third time must not double-count it.
+    node_state_run3 = {**node_state_run2, "delivery_log": node_result_2["delivery_log"]}
+    node_result_3 = ingestion_node(node_state_run3)
+    assert len(node_result_3["delivery_log"]) == 2, "resubmitting the same raw_source rows must de-duplicate, not grow"
+
+    # A cold-start thread that only ever got a benchmark_prior fallback, then
+    # LATER gets a real shift, must drop the placeholder rather than average
+    # a real logged shift together with four fabricated cold-start rows.
+    cold_start_result = ingestion_node({})
+    assert cold_start_result["ingest_health"]["sources_seen"] == ["benchmark_prior"]
+    warmed_up_result = ingestion_node({
+        "delivery_log": cold_start_result["delivery_log"],
+        "raw_delivery_rows": node_state_run1["raw_delivery_rows"],
+        "raw_source": "self_reported",
+    })
+    assert warmed_up_result["ingest_health"]["sources_seen"] == ["self_reported"], (
+        "the benchmark_prior placeholder must be dropped the moment real data lands"
+    )
+    assert len(warmed_up_result["delivery_log"]) == 1
+
+    print(f"Run 1 (1 shift submitted):              delivery_log has {len(node_result_1['delivery_log'])} record(s)")
+    print(f"Run 2 (2nd shift submitted separately):  delivery_log has {len(node_result_2['delivery_log'])} record(s) -- both kept")
+    print(f"Run 3 (same shift resubmitted):          delivery_log has {len(node_result_3['delivery_log'])} record(s) -- deduplicated")
+    print(f"Cold start -> real data: benchmark_prior dropped, sources_seen={warmed_up_result['ingest_health']['sources_seen']}")
+    print("\nSTEP 6 ASSERTS PASSED -- delivery_log now genuinely accumulates across ingestion_node calls")
 
     print("\nALL INGESTION TESTS PASSED")
 

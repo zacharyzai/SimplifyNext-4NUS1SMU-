@@ -5,9 +5,9 @@
     threadId: document.getElementById("thread-id"),
     userId: document.getElementById("user-id"),
     btnRun: document.getElementById("btn-run"),
-    btnSimulate: document.getElementById("btn-simulate"),
     btnReset: document.getElementById("btn-reset"),
     rawText: document.getElementById("raw-text"),
+    btnSubmitEarnings: document.getElementById("btn-submit-earnings"),
     status: document.getElementById("status-line"),
 
     conclusionText: document.getElementById("conclusion-text"),
@@ -144,10 +144,22 @@
     const s = data.state_summary || {};
 
     if (s.forecast) {
-      const confidence = s.forecast.confidence || "UNKNOWN";
-      els.conclusionText.textContent =
-        `Projected shortfall of ${fmtCents(s.forecast.shortfall_amount_cents)} on `
-        + `${s.forecast.shortfall_date || "an unknown date"} (${confidence} confidence).`;
+      const f = s.forecast;
+      const confidence = f.confidence || "UNKNOWN";
+      const horizon = f.horizon_days || 14;
+      if (f.shortfall_date) {
+        els.conclusionText.textContent =
+          `Projected shortfall of ${fmtCents(f.shortfall_amount_cents)} on `
+          + `${f.shortfall_date} (${confidence} confidence).`;
+      } else if (confidence === "UNKNOWN") {
+        // Genuinely nothing to forecast from (no data yet), not "no
+        // shortfall found" -- these read very differently to Bob.
+        els.conclusionText.textContent =
+          `Not enough earnings history yet to make a forecast (${confidence} confidence).`;
+      } else {
+        els.conclusionText.textContent =
+          `No shortfall projected in the next ${horizon} days — you're on track (${confidence} confidence).`;
+      }
     } else {
       els.conclusionText.textContent = "No run yet.";
     }
@@ -333,6 +345,14 @@
           setLive("idle");
         } else {
           renderConversation(data);
+          // data.trace is the thread's FULL history (every run ever done
+          // on it), not just what streamed live during this one -- redraw
+          // from it so earlier steps (from a previous Run agent click, or
+          // from /answer and /approve in between) don't visually vanish
+          // just because beginLiveTrace() cleared the panel at the start
+          // of this run. Without this, the panel only ever shows the most
+          // recent run's steps even though nothing was actually lost.
+          renderFullTrace(data.trace);
           setStatus(`${label} — done.`);
         }
         resolve();
@@ -352,7 +372,30 @@
     const rawText = els.rawText.value.trim();
     runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", rawText);
   });
-  els.btnSimulate.addEventListener("click", () => runAgent(els.btnSimulate, "Simulate next Wednesday"));
+
+  // A dedicated button right next to the earnings-message box, so typing
+  // there and submitting doesn't require jumping to the unrelated "Run
+  // agent" button at the top of the page -- same underlying action
+  // (there's no lighter-weight "just add this record" endpoint; every
+  // raw_text submission re-runs the full graph), just discoverable from
+  // where you're actually typing.
+  els.btnSubmitEarnings.addEventListener("click", () => {
+    const rawText = els.rawText.value.trim();
+    if (!rawText) {
+      setStatus("Type an earnings message first.", true);
+      return;
+    }
+    runAgent(els.btnSubmitEarnings, "Transcribing and running agent", rawText);
+  });
+  // Cmd/Ctrl+Enter submits from inside the textarea -- plain Enter still
+  // inserts a newline, since a pasted screenshot transcript may be
+  // multi-line.
+  els.rawText.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      els.btnSubmitEarnings.click();
+    }
+  });
 
   els.btnReset.addEventListener("click", async () => {
     await withLoading(els.btnReset, "Resetting demo", async () => {

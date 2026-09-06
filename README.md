@@ -62,8 +62,12 @@ status dict.
 Requires Python 3.11+.
 
 ```bash
-pip install langgraph langgraph-checkpoint fastapi uvicorn boto3
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
+
+For local development without AWS, `LLM_PROVIDER=gemini` (see
+`shared/llm.py`) needs a `GEMINI_API_KEY` in a `.env` file at the repo
+root — get one from Google AI Studio, not the Cloud Console.
 
 AWS Bedrock is optional for local development — every module has a
 credential-free fallback path and must run to completion without AWS

@@ -3,28 +3,28 @@
     "platform": "Grab",
     "time_block": "dinner",
     "weekday": 5,
-    "median_net_per_hour_cents": 0,
-    "citation": "TODO: public source (e.g. MOM gig worker income survey / news report)"
+    "median_net_per_hour_cents": 1100,
+    "citation": "SGD 8-12/hr typical range for SG food delivery riders, dinner/peak hours taken at the upper end; superbikesg.com \"How Much Can You Actually Earn Delivering for GrabFood, foodpanda, or Deliveroo in 2025?\", accessed 2026-09-06"
   },
   {
     "platform": "Grab",
     "time_block": "lunch",
     "weekday": 2,
-    "median_net_per_hour_cents": 0,
-    "citation": "TODO: public source"
+    "median_net_per_hour_cents": 900,
+    "citation": "SGD 8-12/hr typical range for SG food delivery riders, lunch/regular hours taken near the lower end; superbikesg.com \"How Much Can You Actually Earn Delivering for GrabFood, foodpanda, or Deliveroo in 2025?\", accessed 2026-09-06"
   },
   {
     "platform": "foodpanda",
     "time_block": "dinner",
     "weekday": 5,
-    "median_net_per_hour_cents": 0,
-    "citation": "TODO: public source"
+    "median_net_per_hour_cents": 1000,
+    "citation": "SGD 8-12/hr typical range for SG food delivery riders, dinner/peak hours; superbikesg.com \"How Much Can You Actually Earn Delivering for GrabFood, foodpanda, or Deliveroo in 2025?\", accessed 2026-09-06"
   },
   {
     "platform": "Lalamove",
     "time_block": "afternoon",
     "weekday": 3,
-    "median_net_per_hour_cents": 0,
-    "citation": "TODO: public source"
+    "median_net_per_hour_cents": 900,
+    "citation": "SGD 8-12/hr typical range reported for SG delivery/courier gig work, regular hours taken near the lower end; superbikesg.com \"How Much Can You Actually Earn Delivering for GrabFood, foodpanda, or Deliveroo in 2025?\", accessed 2026-09-06 -- van/moto courier rates specifically were not separately broken out in this source, so this figure is a same-ballpark placeholder pending a Lalamove-specific citation"
   }
 ]

@@ -1,0 +1,8 @@
+# Pinned to what was actually verified working (see docs/SWAP_STATUS.md).
+# Install: pip install -r requirements.txt  (Python 3.11+)
+langgraph>=1.2,<2
+langgraph-checkpoint>=4.1,<5
+fastapi>=0.141,<1
+uvicorn[standard]>=0.52,<1
+boto3>=1.43,<2
+google-genai>=2.22,<3

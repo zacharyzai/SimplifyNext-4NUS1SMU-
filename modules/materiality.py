@@ -147,6 +147,10 @@ def score_materiality(forecast, profile, last_alert, today):
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
         "suppressed_by": suppressed_by,
+        "date": today,
+        # ^ lets this exact dict be handed back in as next run's `last_alert`
+        # (gate_node does this via the checkpointed materiality_flag field)
+        # without needing a separate date to track alongside it.
     }
 
 def score_staleness(profile, upcoming_bills, today, last_alert=None):
@@ -217,6 +221,7 @@ def score_staleness(profile, upcoming_bills, today, last_alert=None):
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
         "suppressed_by": suppressed_by,
+        "date": today,
     }
 
 _CONSTRAINT_STOPWORDS = {
@@ -335,15 +340,23 @@ def gate_node(state: dict):
     upgrades this to TIER_APPROVAL once it has a specific chosen_plan to
     run through classify_action(), since no action exists yet here.
 
-    KNOWN LIMITATION: CashFlowState has no dedicated field for "the last
-    alert that fired," so cooldown/novelty suppression starts fresh every
-    run rather than persisting across runs on the same thread. Flagged
-    here rather than silently working around it by adding an undeclared
-    state key (shared/schema.py is frozen, Member 1 owned).
+    Cross-run cooldown/novelty memory: CashFlowState has no DEDICATED field
+    for "the last alert that fired," but it doesn't need one -- this node's
+    own previous output, `materiality_flag`, is already checkpointed
+    (last-write-wins) and already carries everything score_materiality/
+    score_staleness need as a `last_alert` (signature, date -- see the
+    "date" key added to both functions' return dicts). Reading it back in
+    BEFORE this run overwrites it is the whole fix: no new state key, no
+    schema change, just actually using what was already being stored.
+    Previously this was hardcoded to `None` on every call, which silently
+    meant cooldown suppression could never fire in the real running graph
+    even though the standalone tests (which construct a fake last_alert by
+    hand) proved the underlying math worked.
     """
     forecast = state.get("forecast") or {}
     ingest_health = state.get("ingest_health") or {}
     today = datetime.utcnow().strftime("%Y-%m-%d")
+    previous_alert = state.get("materiality_flag")
 
     profile = {"median_daily_cents": forecast.get("daily_income_baseline_cents", 0)}
     staleness_profile = {"days_since_last_observation": ingest_health.get("days_since_last_observation", 0)}
@@ -363,8 +376,13 @@ def gate_node(state: dict):
         except ValueError:
             pass
 
-    materiality = score_materiality(forecast, profile, None, today)
-    staleness = score_staleness(staleness_profile, upcoming_bills, today, None)
+    # previous_alert is handed to BOTH checks -- each only actually uses it
+    # if its own signature matches (a shortfall alert's signature never
+    # equals a staleness alert's "stale_data", so passing the same dict to
+    # both is safe: whichever type it actually was is the only one it can
+    # suppress).
+    materiality = score_materiality(forecast, profile, previous_alert, today)
+    staleness = score_staleness(staleness_profile, upcoming_bills, today, previous_alert)
 
     fire = materiality["fire"] or staleness["fire"]
     materiality_flag = materiality if materiality["fire"] else staleness if staleness["fire"] else materiality
@@ -549,5 +567,35 @@ if __name__ == "__main__":
     print(f"\nSame $112 shortfall at LOW confidence: score={low_result['score']} (vs HIGH: {real_result['score']})")
     assert low_result["score"] < real_result["score"], "LOW confidence must score lower than HIGH for the same shortfall"
     assert low_result["fire"] is False, "the confidence penalty should be enough to keep this below threshold"
+
+    print("\n" + "=" * 60)
+    print("STEP 5: gate_node() cooldown ACTUALLY persists across two calls")
+    print("=" * 60)
+    print("Previously gate_node hardcoded last_alert=None on every call, so this")
+    print("exact scenario (the standalone functions tested cooldown, but gate_node")
+    print("itself never could) silently never fired in the real running graph.")
+
+    gate_state_run1 = {
+        "forecast": {**real_forecast, "daily_income_baseline_cents": 5000},
+        "ingest_health": {"days_since_last_observation": 0},
+    }
+    gate_result_1 = gate_node(gate_state_run1)
+    assert gate_result_1["materiality_flag"]["fire"] is True, "first run should fire on a real shortfall"
+
+    # Simulate what the checkpointer does between two graph.invoke() calls on
+    # the same thread: gate_node's own previous output (materiality_flag) is
+    # exactly what a second call would see in `state`.
+    gate_state_run2 = {**gate_state_run1, "materiality_flag": gate_result_1["materiality_flag"]}
+    gate_result_2 = gate_node(gate_state_run2)
+
+    assert gate_result_2["materiality_flag"]["fire"] is False, (
+        "the SAME shortfall signature, same day, must now be suppressed by cooldown "
+        "on the second gate_node() call -- this is the exact behavior that was broken"
+    )
+    assert gate_result_2["materiality_flag"]["suppressed_by"] == "cooldown"
+    print(f"Run 1: fire={gate_result_1['materiality_flag']['fire']}")
+    print(f"Run 2 (same signature, same day): fire={gate_result_2['materiality_flag']['fire']}, "
+          f"suppressed_by={gate_result_2['materiality_flag']['suppressed_by']}")
+    print("\nSTEP 5 ASSERTS PASSED -- cooldown now genuinely persists across gate_node calls")
 
     print("\nALL DECISION LAYER TESTS PASSED (materiality.py)")

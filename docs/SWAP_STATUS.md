@@ -1,5 +1,113 @@
 # SWAP_STATUS.md — module swap-in status
 
+**Update 2026-09-07 (same branch) — a second review pass found three more
+real gaps, all fixed and covered by new integration tests, not just unit
+math:**
+
+1. **Cooldown suppression never actually ran in the live graph.**
+   `modules/materiality.py`'s `gate_node()` hardcoded `score_materiality(...,
+   None, today)` and `score_staleness(..., previous_alert=None)` on every
+   single call — the standalone `__main__` tests proved the cooldown MATH
+   worked (by hand-constructing a fake `last_alert`), but the real node
+   wired into `graph.py` could never suppress a repeat alert, because it
+   never had a real `last_alert` to check against. Fixed by reading back
+   `state.get("materiality_flag")` — this node's own previous output,
+   already checkpointed, last-write-wins — as `previous_alert` before this
+   run overwrites it. No schema change needed: `materiality_flag` already
+   carried a `signature`; added a `"date"` key to both `score_materiality`'s
+   and `score_staleness`'s return dicts so the same dict works as next
+   run's `last_alert` input directly. New test (`materiality.py` STEP 5)
+   calls `gate_node()` twice back-to-back, simulating exactly what the
+   checkpointer hands back between two `graph.invoke()` calls on one
+   thread, and asserts the second call is genuinely suppressed.
+2. **`delivery_log` overwrote instead of accumulating.** `modules/
+   ingestion.py`'s `ingestion_node()` rebuilt `delivery_log` from scratch
+   every call, off only that call's raw input — since the field has no
+   reducer in `CashFlowState`, a second "Run agent" with a new earnings
+   message silently erased the first one. This made any multi-shift demo
+   (e.g. "log 3 Saturday dinners to unlock a play that needs 3
+   observations") fragile: it only worked if all 3 landed in one message,
+   in one LLM call, in one shot. Fixed: `ingestion_node()` now reads back
+   `state.get("delivery_log")`, keeps every real record from it, and adds
+   this run's new ones on top, de-duplicated by `(date, platform,
+   gross_cents, trips)`. A `benchmark_prior` cold-start fallback is
+   dropped the moment real data exists. New test (`ingestion.py` STEP 6)
+   submits two different shifts across two separate `ingestion_node()`
+   calls and asserts both survive; also asserts resubmitting the same
+   shift doesn't double-count it, and that warming up from cold-start
+   correctly drops the placeholder benchmark rows.
+3. **`data/benchmarks.json` had `median_net_per_hour_cents: 0` for all
+   four entries**, cited only as `"TODO: public source"` — a cold-start
+   forecast was honest and non-crashing (per the 2026-09-06 fix above) but
+   projected literally $0/day. Replaced with real published figures (SGD
+   8-12/hr typical range for SG food-delivery riders) and a real citation.
+   Lalamove's figure is flagged in its own citation as a same-ballpark
+   placeholder pending a courier-specific source, rather than silently
+   presented as equally well-sourced as the other three.
+
+Also deleted `tracing_scaffold.py` and `state_schema.py` from the repo
+root — neither was imported anywhere, both were abandoned early-planning
+drafts full of their own unresolved TODOs, and `docs/SYSTEM_DESIGN.md` was
+incorrectly citing `state_schema.py` as if it were the real, current
+schema mirror. Fixed that doc and `docs/DEFINITION_OF_DONE.md` (which
+pointed at `tracing_scaffold.py`'s `TraceLog.record(...)`, a function that
+was never actually used anywhere) to describe the trace pattern every
+module actually uses instead.
+
+**Update 2026-09-06 (on branch `member2-fixes-and-ui-polish`, not yet on main)
+— live-tested the running site end-to-end and fixed what broke:**
+
+1. **Cold start gave up entirely instead of forecasting.** A brand-new
+   thread with zero dated history falls back to the `data/benchmarks.json`
+   prior (correctly), but `modules/forecast.py`'s `run_forecast()` only
+   ever looked at *dated* daily totals for its baseline, saw none, and
+   returned `confidence: UNKNOWN, "cannot project"` — silently ignoring
+   the benchmark-derived cells it had just built. This is exactly the
+   click a judge makes first. Fixed with `_cold_start_daily_cents()`: when
+   there's no dated history but there ARE `benchmark_prior` rows, estimate
+   a rough daily figure from their rate × `ASSUMED_SHIFT_HOURS` and
+   forecast from that instead, at whatever confidence its precision (0.2)
+   actually earns — which the `determine_confidence()` fix below now
+   correctly reports as `LOW` instead of forcing `UNKNOWN`.
+2. **`HIGH_CONFIDENCE_MIN_DAYS = 14` was inconsistent with
+   `MIN_OBSERVATIONS = 3`.** A worker who logs a shift every day spreads
+   history evenly across all 7 weekdays, so 14 days gives every
+   `(platform, weekday, time_block)` cell only 2 observations — always
+   `UNKNOWN`, so `HIGH` confidence was mathematically unreachable for that
+   pattern regardless of data quality. This directly contradicts this
+   file's own 2026-09-06 note above claiming demo (b)'s "14 days of
+   healthy history" scenario verifies `HIGH` — it verifies `MEDIUM` (rerun
+   and confirmed via `python graph.py`). Bumped to 21 days (3 full weeks),
+   which is the actual bottleneck MIN_OBSERVATIONS imposes. `graph.py`'s
+   own demo (b) fixture still uses 14 days and still reports `MEDIUM` —
+   that fixture wasn't touched (owned by Member 1); only the constants
+   are now internally consistent about why 14 isn't enough.
+3. **Frontend showed "Projected shortfall of unknown on an unknown date"**
+   whenever there was no shortfall, instead of the trace panel's correct
+   "No shortfall projected." `static/app.js`'s `renderConversation()` had
+   one template that assumed a shortfall always exists; it now branches on
+   `shortfall_date` being present, `null` with `UNKNOWN` confidence
+   ("not enough history yet"), or `null` with a real confidence
+   ("you're on track").
+4. **"Simulate next Wednesday" removed** — it called the exact same
+   endpoint as "Run agent" with no distinguishing parameter, and nothing
+   in `server.py` or `graph.py` supported any date-simulation at all. It
+   was a dead, misleading control, not a working feature being disabled.
+5. **Added `requirements.txt`** (didn't exist) and pointed `README.md` at
+   it — `pip install <ad-hoc list>` was already missing `google-genai` and
+   there was no single reproducible install step for a clean clone.
+
+Verified: all 7 module self-tests + `python graph.py`'s 3-path demo still
+pass; added a new standalone assert (`modules/forecast.py` Step 6)
+covering the cold-start fix specifically.
+
+**Still open, not touched here:** `data/benchmarks.json`'s rates are still
+`0` (placeholder), so a cold-start forecast is now honest and non-crashing
+but currently projects $0/day until real cited figures land. And there's
+still no LLM key configured in this environment, so the "answer a
+question, confidence improves" success path is untested live — only the
+"hit the ceiling" path is exercised.
+
 **Update 2026-09-06 (gate + planner swap applied, all 4 nodes now real):**
 `graph.py` now imports `from modules.materiality import gate_node` and
 `from modules.planner import planner_node`. This is the first time `python
