@@ -87,9 +87,13 @@
   <section class="right-col">
     <div class="sticky-controls">
       <div class="control-row">
+        <select id="scenario-select" class="scenario-select" title="Seed this run with a named earnings-history fixture">
+          <option value="">No scenario (current thread's own data)</option>
+        </select>
         <button class="btn btn-dark" id="btn-run" type="button">Run agent</button>
         <button class="btn btn-outline" id="btn-simulate" type="button">Simulate next Wednesday</button>
         <span class="spacer"></span>
+        <span class="llm-badge" id="llm-badge" title="Whether the configured LLM provider is actually reachable">checking LLM…</span>
         <span class="live-indicator"><span class="live-dot" id="live-dot"></span><span id="live-text">idle</span></span>
         <button class="btn btn-ghost" id="btn-reset" type="button">Reset demo</button>
       </div>

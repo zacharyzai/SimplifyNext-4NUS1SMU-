@@ -76,6 +76,30 @@ aws sso login --profile workshop
 Model: `global.anthropic.claude-haiku-4-5-20251001-v1:0`, region
 `ap-southeast-1`, profile `workshop` (see `shared/schema.py`).
 
+### LLM provider — required for the clarify loop and chat box to actually work
+
+`shared/llm.py` is the one call surface, switched via `LLM_PROVIDER`. If
+this isn't set to a working provider, `extract_from_text()` and
+`classify_message()` silently return nothing usable — the clarify loop
+will ask its question, get an answer, fail to transcribe it, ask again,
+and exhaust `MAX_REPLAN_LOOPS` without ever landing. **Before recording a
+demo, set one of:**
+
+```bash
+# Local/demo path (recommended — no AWS SSO needed):
+export LLM_PROVIDER=gemini
+export GEMINI_API_KEY=...        # from Google AI Studio, not Cloud Console
+# or put both in a .env file at the repo root (auto-loaded by shared/llm.py)
+
+# Submission-target path:
+export LLM_PROVIDER=bedrock
+aws sso login --profile workshop
+```
+
+Check `GET /health` before recording — it reports `llm_provider` and
+`llm_ready`. The UI also shows a small readiness badge for this so a dead
+LLM path is visible up front instead of degrading silently mid-demo.
+
 ## Running it
 
 Each module runs standalone and prints its own test output — this is how you

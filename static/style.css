@@ -499,6 +499,29 @@ textarea { font-family: inherit; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faintest); }
 .live-dot.is-live { background: var(--success-dot); animation: cfPulse 1.1s ease-in-out infinite; }
 
+.scenario-select {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: #fff;
+  color: var(--text);
+  max-width: 240px;
+}
+
+.llm-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.llm-badge.ready { background: var(--success-bg); border-color: var(--success-bd); color: var(--success); }
+.llm-badge.not-ready { background: var(--danger-bg); border-color: var(--danger-bd); color: var(--danger); }
+
 .approval-bar {
   display: flex;
   flex-wrap: wrap;

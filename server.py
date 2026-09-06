@@ -23,6 +23,7 @@ from shared.schema import AWS_PROFILE, AWS_REGION
 from shared.money import cents_from_string
 from shared.llm import converse
 import graph as agent_graph
+from data import demo_scenarios
 
 app = FastAPI(title="Agentic Cash-Flow Copilot for Bob")
 
@@ -188,7 +189,8 @@ def _bill_from_classification(classification: Dict[str, Any]) -> Optional[Dict[s
 
 
 @app.get("/run/{run_id}/stream")
-def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = None) -> StreamingResponse:
+def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = None,
+                scenario: Optional[str] = None) -> StreamingResponse:
     """SSE version of /run: one 'trace' event per node as the graph
     actually executes it, then a final 'done' event in the same shape
     /run returns (so the front end's existing renderConversation() works
@@ -197,10 +199,19 @@ def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = 
     GET, not POST -- EventSource can only issue GET with no body, so
     run_id doubles as the thread_id and any raw input rides in the query
     string instead of a JSON payload.
+
+    scenario, if given, looks up a named fixture in data/demo_scenarios.py
+    and merges its `inputs` in -- this is how the demo/video UI seeds real
+    earnings history through a GET request, since raw_delivery_rows has no
+    other way to reach this endpoint's query string.
     """
     def event_stream():
         config = {"configurable": {"thread_id": run_id}}
         inputs: Dict[str, Any] = {"user_id": user_id, "loop_count": 0}
+        if scenario:
+            fixture = demo_scenarios.SCENARIOS.get(scenario)
+            if fixture:
+                inputs.update(fixture["inputs"])
         chat_ack = None
         if raw_text:
             classification = classify_message(raw_text)
@@ -330,12 +341,34 @@ def get_trace(thread_id: str) -> Dict[str, Any]:
         return _error_response(exc)
 
 
+@app.get("/scenarios")
+def scenarios() -> Dict[str, Any]:
+    """Lists the named demo fixtures (data/demo_scenarios.py) so the front
+    end's scenario selector never hardcodes labels the backend could drift
+    from.
+    """
+    return {
+        "ok": True,
+        "scenarios": [
+            {"id": key, "label": s["label"], "description": s["description"]}
+            for key, s in demo_scenarios.SCENARIOS.items()
+        ],
+    }
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     """Reports whether AWS Bedrock credentials resolve, WITHOUT crashing if
     they do not -- every module in this project must run to completion
     with zero AWS credentials present (Rules Sheet #7), and this endpoint
     is the one place that actually checks whether they happen to be there.
+
+    Also reports which shared/llm.py provider is actually selected
+    (LLM_PROVIDER env var) and whether ITS credential is present -- a demo
+    running with LLM_PROVIDER=none or a missing GEMINI_API_KEY degrades
+    silently (extract_from_text returns [], the clarify loop just runs out
+    its answers without ever landing) with no visible signal on stage.
+    This is what the front end's readiness badge reads.
     """
     bedrock_ok = False
     try:
@@ -345,7 +378,22 @@ def health() -> Dict[str, Any]:
         bedrock_ok = creds is not None and creds.get_frozen_credentials().access_key is not None
     except Exception:  # noqa: BLE001 -- absence of credentials must never crash /health
         bedrock_ok = False
-    return {"ok": True, "bedrock": bedrock_ok}
+
+    import os
+    provider = os.getenv("LLM_PROVIDER", "none").lower()
+    if provider == "bedrock":
+        llm_ready = bedrock_ok
+    elif provider == "gemini":
+        llm_ready = bool(os.getenv("GEMINI_API_KEY"))
+    else:
+        llm_ready = False
+
+    return {
+        "ok": True,
+        "bedrock": bedrock_ok,
+        "llm_provider": provider,
+        "llm_ready": llm_ready,
+    }
 
 
 @app.post("/demo/reset")

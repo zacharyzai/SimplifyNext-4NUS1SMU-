@@ -352,12 +352,20 @@ def gate_node(state: dict):
     # as a sentinel meaning "no dated observations at all" (an empty log,
     # or the benchmark_prior cold-start fallback -- neither of which is
     # Bob's real history going dark). Staleness is about data that USED TO
-    # exist and stopped, not about a thread that never had any yet -- so a
-    # cold-start thread (sources_seen is exactly ["benchmark_prior"], or
-    # nothing was ingested at all) must not be scored as urgently stale on
-    # its very first run.
-    sources_seen = ingest_health.get("sources_seen") or []
-    cold_start = sources_seen in ([], ["none"], ["benchmark_prior"])
+    # exist and stopped, not about a thread that never had any yet.
+    #
+    # Detecting this off sources_seen (e.g. "is it exactly
+    # ['benchmark_prior']?") is NOT reliable: if raw_delivery_rows are
+    # supplied but every row is rejected (bad dates etc.), records=[] but
+    # normalise_records still reports its source label regardless of
+    # accept count, so sources_seen ends up mixed, e.g.
+    # ["partner_statement", "benchmark_prior"] -- a list that doesn't match
+    # any cold-start pattern even though zero real dated data exists. The
+    # actually reliable signal is ingest_health's own date_range: it is
+    # [None, None] exactly when there are no dated accepted rows at all,
+    # which is precisely when the 9999 sentinel was produced.
+    date_range = ingest_health.get("date_range") or [None, None]
+    cold_start = date_range[0] is None
     days_since = 0 if cold_start else ingest_health.get("days_since_last_observation", 0)
     staleness_profile = {"days_since_last_observation": days_since}
 
@@ -603,16 +611,20 @@ if __name__ == "__main__":
 
     # ingestion.py's sentinel for "no dated observations at all" is
     # days_since_last_observation=9999 -- a brand-new thread that fell back
-    # to the benchmark_prior cold-start prior (sources_seen ==
-    # ["benchmark_prior"]) must not have that sentinel misread as "9999
-    # days of real silence" and fire an urgent staleness alert on its very
-    # first run.
+    # to the benchmark_prior cold-start prior must not have that sentinel
+    # misread as "9999 days of real silence" and fire an urgent staleness
+    # alert on its very first run. The reliable signal is date_range ==
+    # [None, None] (no dated accepted rows), not sources_seen -- see below.
     cold_start_state = {
         "forecast": {
             "generated_from_date": today_day0,
             "bills_considered": [{"name": "Phone bill", "day_offset": 3, "amount_cents": 3800}],
         },
-        "ingest_health": {"sources_seen": ["benchmark_prior"], "days_since_last_observation": 9999},
+        "ingest_health": {
+            "sources_seen": ["benchmark_prior"],
+            "days_since_last_observation": 9999,
+            "date_range": [None, None],
+        },
     }
     cold_start_result = gate_node(cold_start_state)
     print(f"\nCold-start thread (benchmark_prior only): fire={cold_start_result['materiality_flag']['fire']} "
@@ -621,5 +633,41 @@ if __name__ == "__main__":
         "a thread that never had any real history yet must not fire a staleness "
         "alert just because ingestion's 'no dated data' sentinel looks like 9999 days"
     )
+    cold_start_trace_text = " ".join(cold_start_result["trace"][0]["checked"]) + cold_start_result["trace"][0]["concluded"]
+    assert "9999" not in cold_start_trace_text, (
+        "the raw 9999 sentinel must never reach user-facing trace text -- "
+        "gate_node must translate it to a real elapsed-time value (0, for cold start) "
+        "before it ever reaches score_staleness"
+    )
+
+    # Regression for the narrower gap: sources_seen becomes a MIXED list
+    # (e.g. ["partner_statement", "benchmark_prior"]) when raw_delivery_rows
+    # are supplied but every row is rejected (bad dates) and ingestion then
+    # falls back to the benchmark prior -- normalise_records reports its
+    # source label regardless of accept count, so a sources_seen-based
+    # cold-start check misses this case even though zero real dated data
+    # exists. date_range == [None, None] catches it correctly regardless of
+    # what labels appear in sources_seen.
+    mixed_sources_state = {
+        "forecast": {
+            "generated_from_date": today_day0,
+            "bills_considered": [{"name": "Phone bill", "day_offset": 3, "amount_cents": 3800}],
+        },
+        "ingest_health": {
+            "sources_seen": ["partner_statement", "benchmark_prior"],
+            "days_since_last_observation": 9999,
+            "date_range": [None, None],
+        },
+    }
+    mixed_sources_result = gate_node(mixed_sources_state)
+    print(f"\nMixed sources_seen (rejected real rows + benchmark fallback): "
+          f"fire={mixed_sources_result['materiality_flag']['fire']} score={mixed_sources_result['materiality_flag']['score']}")
+    assert mixed_sources_result["materiality_flag"]["fire"] is False, (
+        "a mixed sources_seen label list must not defeat cold-start detection -- "
+        "date_range, not the source labels, is what actually proves whether real "
+        "dated data exists"
+    )
+    mixed_trace_text = " ".join(mixed_sources_result["trace"][0]["checked"]) + mixed_sources_result["trace"][0]["concluded"]
+    assert "9999" not in mixed_trace_text, "the raw sentinel must not leak even when sources_seen is mixed"
 
     print("\nALL DECISION LAYER TESTS PASSED (materiality.py)")

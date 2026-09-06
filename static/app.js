@@ -7,6 +7,8 @@
     btnRun: document.getElementById("btn-run"),
     btnSimulate: document.getElementById("btn-simulate"),
     btnReset: document.getElementById("btn-reset"),
+    scenarioSelect: document.getElementById("scenario-select"),
+    llmBadge: document.getElementById("llm-badge"),
     rawText: document.getElementById("raw-text"),
     btnSendRawText: document.getElementById("btn-send-raw-text"),
     chatLog: document.getElementById("chat-log"),
@@ -402,6 +404,8 @@
       setLive("running");
       const params = new URLSearchParams({ user_id: currentUserId() });
       if (rawText) params.set("raw_text", rawText);
+      const scenario = els.scenarioSelect.value;
+      if (scenario) params.set("scenario", scenario);
       const es = new EventSource(`/run/${encodeURIComponent(currentThreadId())}/stream?${params}`);
 
       es.addEventListener("chat", (e) => {
@@ -542,6 +546,46 @@
       }
     });
   });
+
+  // Populate the scenario selector from the backend rather than hardcoding
+  // labels here, so data/demo_scenarios.py stays the single source of truth.
+  (async () => {
+    try {
+      const res = await fetch("/scenarios");
+      const data = await res.json();
+      if (data.ok) {
+        for (const s of data.scenarios) {
+          const opt = document.createElement("option");
+          opt.value = s.id;
+          opt.textContent = s.label;
+          opt.title = s.description;
+          els.scenarioSelect.appendChild(opt);
+        }
+      }
+    } catch (err) {
+      // A missing scenario list must not block the rest of the UI.
+    }
+  })();
+
+  // Surface whether the configured LLM provider is actually reachable up
+  // front -- without this, a missing GEMINI_API_KEY / LLM_PROVIDER=none
+  // degrades silently: the clarify loop asks its question, fails to
+  // transcribe the answer, and exhausts MAX_REPLAN_LOOPS with no visible
+  // signal that the LLM was never in the loop at all.
+  (async () => {
+    try {
+      const res = await fetch("/health");
+      const data = await res.json();
+      const ready = !!data.llm_ready;
+      els.llmBadge.textContent = ready
+        ? `LLM ready (${data.llm_provider})`
+        : `LLM unavailable (${data.llm_provider || "none"}) — transcription will fail`;
+      els.llmBadge.classList.toggle("ready", ready);
+      els.llmBadge.classList.toggle("not-ready", !ready);
+    } catch (err) {
+      els.llmBadge.textContent = "LLM status unknown";
+    }
+  })();
 
   setStatus("Ready.");
 })();
