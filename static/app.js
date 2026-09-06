@@ -38,6 +38,7 @@
     traceMeta: document.getElementById("trace-meta"),
     traceEmpty: document.getElementById("trace-empty"),
     traceBody: document.getElementById("trace-body"),
+    btnJumpLatest: document.getElementById("btn-jump-latest"),
   };
 
   // Heuristic for "checked" items that found nothing, per the spec's grey
@@ -256,14 +257,42 @@
     els.traceMeta.textContent = count > 0 ? `${count} step${count === 1 ? "" : "s"} · newest at the bottom` : "no thread yet";
   }
 
+  // Trace panel is a bounded, scrollable box (static/style.css .trace-list)
+  // once a run has more than a screenful of cards. "Near bottom" uses a
+  // pixel threshold rather than exact equality since smooth-scroll and
+  // sub-pixel layout rounding rarely land on scrollHeight exactly.
+  const NEAR_BOTTOM_PX = 48;
+
+  function isNearTraceBottom() {
+    const el = els.traceBody;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+  }
+
+  function scrollTraceToBottom() {
+    els.traceBody.scrollTop = els.traceBody.scrollHeight;
+    els.btnJumpLatest.hidden = true;
+  }
+
+  els.traceBody.addEventListener("scroll", () => {
+    if (isNearTraceBottom()) els.btnJumpLatest.hidden = true;
+  });
+  els.btnJumpLatest.addEventListener("click", scrollTraceToBottom);
+
   function beginLiveTrace() {
     els.traceBody.innerHTML = "";
     refreshTraceMeta();
+    els.btnJumpLatest.hidden = true;
   }
 
   function appendLiveTraceCard(record) {
+    const wasNearBottom = isNearTraceBottom();
     els.traceBody.insertAdjacentHTML("beforeend", renderTraceCard(record));
     refreshTraceMeta();
+    // Only yank the view down if the judge was already following along at
+    // the bottom -- if they've scrolled up to reread an earlier step,
+    // respect that and surface "jump to latest" instead of interrupting.
+    if (wasNearBottom) scrollTraceToBottom();
+    else els.btnJumpLatest.hidden = false;
   }
 
   // Used by the non-streamed endpoints (/approve, /answer) -- they return
@@ -272,6 +301,7 @@
   function renderFullTrace(trace) {
     els.traceBody.innerHTML = (trace || []).map(renderTraceCard).join("");
     refreshTraceMeta();
+    scrollTraceToBottom();
   }
 
   // --- Actions -----------------------------------------------------------

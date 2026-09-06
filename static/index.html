@@ -113,7 +113,10 @@
       <p class="empty-sub">nothing renders here unless the agent actually ran the step<br>press &ldquo;Run agent&rdquo; to start a thread</p>
     </div>
 
-    <div class="trace-list" id="trace-body"></div>
+    <div class="trace-scroll-wrap">
+      <div class="trace-list" id="trace-body"></div>
+      <button class="jump-latest" id="btn-jump-latest" type="button" hidden>&darr; Jump to latest</button>
+    </div>
   </section>
 
 </main>

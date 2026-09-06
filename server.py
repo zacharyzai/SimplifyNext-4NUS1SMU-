@@ -75,13 +75,32 @@ def _state_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _run_response(state: Dict[str, Any]) -> Dict[str, Any]:
+def _run_response(state: Dict[str, Any], thread_id: str) -> Dict[str, Any]:
+    """Shapes a graph state into the JSON the front end renders.
+
+    awaiting_clarify reflects whether the graph is ACTUALLY paused at
+    "clarify" right now (checked via graph.get_state().next), not merely
+    whether open_questions happens to be non-empty. Now that clarify is a
+    real interrupt (graph.py), a run can hit MAX_REPLAN_LOOPS, move on to
+    gate/planner, and still have a stale open_questions list sitting in
+    state from the last unresolved forecast pass -- without this check the
+    UI would keep showing "answer to continue" for a question the graph
+    has already stopped waiting on, and a submitted answer would silently
+    start a brand new run instead of doing anything useful with it.
+    """
+    try:
+        awaiting_clarify = "clarify" in agent_graph.graph.get_state(
+            {"configurable": {"thread_id": thread_id}}
+        ).next
+    except Exception:  # noqa: BLE001 -- a state-read hiccup must not break the response
+        awaiting_clarify = False
     return {
         "ok": True,
         "state_summary": _state_summary(state),
         "trace": state.get("trace", []),
         "awaiting_approval": bool(state.get("awaiting_approval", False)),
-        "open_questions": state.get("open_questions", []),
+        "awaiting_clarify": awaiting_clarify,
+        "open_questions": state.get("open_questions", []) if awaiting_clarify else [],
     }
 
 
@@ -97,7 +116,7 @@ def run(req: RunRequest) -> Dict[str, Any]:
         state = agent_graph.run_agent(
             user_id=req.user_id, thread_id=req.thread_id, inputs=req.inputs,
         )
-        return _run_response(state)
+        return _run_response(state, req.thread_id)
     except Exception as exc:  # noqa: BLE001 -- the demo must never show a 500
         return _error_response(exc)
 
@@ -125,10 +144,17 @@ def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = 
         try:
             for update in agent_graph.graph.stream(inputs, config=config, stream_mode="updates"):
                 for node_update in update.values():
+                    # Hitting an interrupt_before point (clarify, or a
+                    # Tier 2 approval halt) emits {"__interrupt__": (...)}
+                    # in the updates stream -- a tuple of Interrupt
+                    # objects, not a node's return dict. Nothing to trace;
+                    # the stream naturally ends right after this either way.
+                    if not isinstance(node_update, dict):
+                        continue
                     for record in node_update.get("trace", []) or []:
                         yield _sse("trace", record)
             state = agent_graph.graph.get_state(config).values
-            yield _sse("done", _run_response(state))
+            yield _sse("done", _run_response(state, run_id))
         except Exception as exc:  # noqa: BLE001 -- a dropped stream must not 500, just stop
             yield _sse("error", _error_response(exc))
 
@@ -143,54 +169,63 @@ def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = 
 def approve(req: ApproveRequest) -> Dict[str, Any]:
     try:
         state = agent_graph.resume_after_approval(req.thread_id, req.approved)
-        return _run_response(state)
+        return _run_response(state, req.thread_id)
     except Exception as exc:  # noqa: BLE001
         return _error_response(exc)
 
 
 @app.post("/answer")
 def answer(req: AnswerRequest) -> Dict[str, Any]:
-    """Feed Bob's real answer back into the replanning loop.
+    """Feed Bob's real answer back into the paused replanning loop.
 
-    clarify_node is not in the graph's interrupt_before list, so a thread
-    is never actually left paused waiting on this endpoint -- the loop
-    already resolves (up to MAX_REPLAN_LOOPS) inside a single run_agent()
-    call, simulating its own answers. So there is nothing to "resume"
-    here; what Bob's real answer needs is a NEW run_agent() call on this
-    thread, with the answer fed in as raw_text -- the same field the
-    trace-panel UI's "earnings message" box uses. START always leads to
-    ingestion, so this naturally re-enters at ingestion_node (the
-    clarify_node -> ingestion_node edge), giving Bob's answer a real
-    chance to change the forecast/plan instead of just being logged.
+    "clarify" is a genuine interrupt_before pause now (graph.py) -- a
+    thread that asked an open question is actually halted there, not
+    mid-way through clarify_node looping on a fabricated answer. This
+    resumes that EXACT paused run via update_state() + invoke(None, ...)
+    rather than starting a fresh run_agent() call, so loop_count and
+    everything already computed this run carry forward instead of
+    resetting to zero.
     """
     try:
         config = {"configurable": {"thread_id": req.thread_id}}
         snapshot = agent_graph.graph.get_state(config)
 
+        combined_answer = " ".join(v for v in req.answers.values() if v).strip()
         trace_record = {
             "node": "answer_endpoint",
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "checked": list(req.answers.keys()),
             "found": {"answers": req.answers},
-            "concluded": f"Received Bob's answer(s) to {len(req.answers)} open question(s); re-running with it as new ingestion input.",
+            "concluded": f"Received Bob's answer(s) to {len(req.answers)} open question(s).",
             "confidence": "HIGH",
             "degraded": False,
         }
-        agent_graph.graph.update_state(config, {"trace": [trace_record]})
 
-        if snapshot.next:
-            # Genuinely paused -- that's a Tier 2 approval halt, which
-            # /approve resumes, not /answer. Nothing more to do than log
-            # the answer above; return the (still-paused) state as-is.
+        if "clarify" in snapshot.next:
+            # Genuinely paused waiting on exactly this answer -- inject it
+            # into the field ingestion_node reads and resume the SAME run.
+            agent_graph.graph.update_state(config, {
+                "raw_text": combined_answer,
+                "trace": [trace_record],
+            })
+            state = agent_graph.graph.invoke(None, config=config)
+        elif snapshot.next:
+            # Paused somewhere else (a Tier 2 approval halt) -- that's
+            # /approve's job, not /answer's. Just log the answer.
+            agent_graph.graph.update_state(config, {"trace": [trace_record]})
             state = agent_graph.graph.get_state(config).values
         else:
-            combined_answer = " ".join(v for v in req.answers.values() if v).strip()
+            # Nothing pending on this thread -- no open question to answer
+            # (e.g. it resolved or this is a fresh thread). Rather than
+            # silently discard Bob's answer, start a run with it as the
+            # thread's first real input.
+            agent_graph.graph.update_state(config, {"trace": [trace_record]})
             state = agent_graph.run_agent(
-                user_id=snapshot.values.get("user_id", ""),
+                user_id=snapshot.values.get("user_id") or "bob-001",
                 thread_id=req.thread_id,
                 inputs={"raw_text": combined_answer} if combined_answer else None,
             )
-        return _run_response(state)
+        return _run_response(state, req.thread_id)
     except Exception as exc:  # noqa: BLE001
         return _error_response(exc)
 

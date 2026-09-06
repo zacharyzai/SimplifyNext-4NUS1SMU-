@@ -15,6 +15,7 @@ Three routing decisions turn the pipeline into an agent:
   - the Tier 2 approval halt: an irreversible/material action pauses the
     graph (interrupt_before=["execute_node"]) until Bob approves it.
 """
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
@@ -45,23 +46,31 @@ def _now_iso() -> str:
 # control-flow nodes, not worker-module stand-ins) --------------------------
 
 def clarify_node(state: CashFlowState) -> Dict[str, Any]:
-    """Ask the open questions raised by low forecast confidence, then loop
-    back to re-ingest. For now, answers are simulated from a fixed lookup
-    so the cycle closes without a human present in the loop; a real UI
-    would surface `open_questions` to Bob via /answer and feed real
-    answers back in instead (see server.py step 4).
+    """Ask the open questions raised by low forecast confidence, then pause.
+
+    "clarify" is a real interrupt_before point (see graph.compile() below)
+    -- a real request genuinely halts the graph here until a human answer
+    arrives. server.py's /answer injects that answer into `raw_text` via
+    graph.update_state() and resumes with invoke(None, ...); this node
+    itself never fabricates or feeds back an answer on Bob's behalf.
+
+    CASHFLOW_DEMO_SIMULATE_ANSWERS=1 is set ONLY by this file's own
+    __main__ demo block, purely to annotate the trace with an example of
+    what an answer might look like -- even when set, it never writes
+    anything back into ingestion. A real server process never sets this.
     """
     questions = state.get("open_questions", [])
-    simulated_answers = {
-        q: "Simulated answer: logged a Sunday dinner shift, made about $95."
-        for q in questions
-    }
     loop_count = state.get("loop_count", 0) + 1
+    found: Dict[str, Any] = {}
+    if os.environ.get("CASHFLOW_DEMO_SIMULATE_ANSWERS") == "1":
+        found["example_answer_for_demo_only"] = {
+            q: "e.g. \"logged a Sunday dinner shift, made about $95\"" for q in questions
+        }
     trace = {
         "node": "clarify_node",
         "ts": _now_iso(),
         "checked": questions,
-        "found": {"answers_simulated": simulated_answers},
+        "found": found,
         "concluded": (
             f"Confidence was not HIGH, so asked {len(questions)} targeted "
             f"question(s) instead of guessing (replan loop {loop_count}/{MAX_REPLAN_LOOPS})."
@@ -150,7 +159,10 @@ _builder.add_conditional_edges(
 _builder.add_edge("execute_node", END)
 
 _checkpointer = InMemorySaver()
-graph = _builder.compile(checkpointer=_checkpointer, interrupt_before=["execute_node"])
+# "clarify" pauses the graph for a real human answer (server.py's /answer
+# resumes it via update_state + invoke(None, ...)); "execute_node" pauses
+# for Tier 2 approval (resume_after_approval() below).
+graph = _builder.compile(checkpointer=_checkpointer, interrupt_before=["clarify", "execute_node"])
 
 
 # --- Public API ------------------------------------------------------------
@@ -226,9 +238,30 @@ def load_constraints(thread_id: str) -> List[str]:
 
 
 if __name__ == "__main__":
+    # Purely cosmetic (see clarify_node's docstring) -- annotates its trace
+    # with an example answer. A real server process never sets this.
+    os.environ["CASHFLOW_DEMO_SIMULATE_ANSWERS"] = "1"
+
     def _print_trace(state: CashFlowState) -> None:
         for record in state.get("trace", []):
             print(f"   [{record['node']}] {record['concluded']}")
+
+    def _drive_through_clarify(thread_id: str, answer_text: str) -> CashFlowState:
+        """Resume a thread paused at "clarify" by injecting a real answer
+        into raw_text and resuming -- exactly what server.py's /answer
+        does -- repeating up to MAX_REPLAN_LOOPS+1 times in case the
+        answer doesn't raise confidence enough to clear the loop in one
+        step. This replaces the old single run_agent() call now that
+        clarify is a genuine interrupt_before pause instead of something
+        clarify_node used to loop through internally on faked answers.
+        """
+        config = {"configurable": {"thread_id": thread_id}}
+        for _ in range(MAX_REPLAN_LOOPS + 1):
+            if "clarify" not in graph.get_state(config).next:
+                break
+            graph.update_state(config, {"raw_text": answer_text})
+            graph.invoke(None, config=config)
+        return graph.get_state(config).values
 
     # --- Demo 0: the original two-run persistence proof (still valid) ------
     print("=== Demo 0: State Persistence across two runs on one thread ===")
@@ -268,34 +301,65 @@ if __name__ == "__main__":
 
     print("\n=== Demo (a): replanning loop (real shortfall -> TIER_NOTIFY) ===")
     thin_history = _recent_daily_rows(num_days=3, daily_gross_cents=5000)
+    # A real date is required -- extract_from_text's system prompt (per
+    # the "never guess" rule) has the LLM transcribe date: null when none
+    # is stated, and normalise_records correctly rejects an undated row.
+    # Without a date, this answer would ALWAYS hit the "didn't land" path
+    # even with a working LLM, which would demonstrate the failure path
+    # only -- including one lets the demo prove the landing path too.
+    _answer_date = (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat()
+    ANSWER_TEXT = (
+        f"On Grab, I also worked a Sunday dinner shift on {_answer_date}: "
+        f"gross $105 minus $10 fee, 4 trips, 3 hours."
+    )
     state_a = run_agent(
         user_id="bob-001", thread_id="bob-demo-a",
         inputs={"raw_delivery_rows": thin_history, "raw_source": "partner_statement"},
     )
+    print("   [paused] awaiting a real answer at clarify -- this is a genuine")
+    print("   interrupt now, not clarify_node looping on a faked one internally.")
+    assert "clarify" in graph.get_state({"configurable": {"thread_id": "bob-demo-a"}}).next, (
+        "expected the first pass to genuinely pause at clarify, not loop through it"
+    )
+    state_a = _drive_through_clarify("bob-demo-a", ANSWER_TEXT)
     _print_trace(state_a)
     assert 1 <= state_a["loop_count"] <= MAX_REPLAN_LOOPS, (
         f"expected the replan loop to fire at least once and never exceed "
         f"the {MAX_REPLAN_LOOPS} ceiling, got loop_count={state_a['loop_count']}"
     )
     assert not state_a.get("awaiting_approval", False)
-    print(f"   Path: forecast(<HIGH) -> clarify -> ingestion -> forecast(...) -> "
-          f"[repeat until HIGH or ceiling] -> gate -> planner -> END")
+    assert not graph.get_state({"configurable": {"thread_id": "bob-demo-a"}}).next, (
+        "expected the run to fully settle (reach gate/planner/END), not stay paused"
+    )
+    print(f"   Path: forecast(<HIGH) -> [pause at clarify -> real answer -> ingestion -> "
+          f"forecast(...)] -> [repeat until HIGH or ceiling] -> gate -> planner -> END")
     print(f"   loop_count={state_a['loop_count']} (ceiling={MAX_REPLAN_LOOPS}), tier_level={state_a['tier_level']}")
 
     # --- Demo (b): the gate does not fire -> ends early in silence ---------
     # Genuinely healthy, recent, 14-day partner-statement history: enough
-    # for HIGH confidence and enough daily income that the fixed demo bill
-    # calendar (forecast.py's DEMO_BILLS) never dips the balance negative --
-    # nothing material AND nothing stale, so both real checks stay quiet.
+    # daily income that the fixed demo bill calendar (forecast.py's
+    # DEMO_BILLS) never dips the balance negative -- nothing material and
+    # nothing stale, so both real checks stay quiet regardless of exactly
+    # which confidence bucket the real forecast lands in. It's driven
+    # through clarify the same way (a)/(c) are (harmlessly a no-op if it
+    # never needed clarify at all -- the driving loop just breaks
+    # immediately) rather than hand-tuning the synthetic data to force
+    # HIGH confidence on the first pass, which real deterministic Python
+    # is free to not grant.
     print("\n=== Demo (b): materiality gate stays silent ===")
     healthy_history = _recent_daily_rows(num_days=14, daily_gross_cents=12000, end_offset_days=1)
     state_b = run_agent(
         user_id="bob-001", thread_id="bob-demo-b",
         inputs={"raw_delivery_rows": healthy_history, "raw_source": "partner_statement"},
     )
+    state_b = _drive_through_clarify("bob-demo-b", ANSWER_TEXT)
     _print_trace(state_b)
     assert state_b["materiality_flag"]["fire"] is False
-    assert "chosen_plan" not in state_b, "planner should never have run"
+    # gate_node explicitly sets chosen_plan: None (not omits it) when it
+    # stays silent, precisely so a stale plan from an earlier run on this
+    # thread can't linger checkpointed -- so the key legitimately exists
+    # with value None here; checking for that value, not mere absence.
+    assert state_b.get("chosen_plan") is None, "planner should never have run"
     print("   Path: forecast(HIGH, no shortfall) -> gate(silent) -> END")
 
     # --- Demo (c): a Tier 2 action halts, then resumes after approval ------
@@ -318,6 +382,7 @@ if __name__ == "__main__":
         user_id="bob-001", thread_id="bob-demo-c",
         inputs={"raw_delivery_rows": thin_history, "raw_source": "partner_statement"},
     )
+    state_c = _drive_through_clarify("bob-demo-c", ANSWER_TEXT)
     _print_trace(state_c)
     assert state_c.get("awaiting_approval") is True, "Tier 2 action should halt awaiting approval"
     print("   Halted: awaiting_approval =", state_c["awaiting_approval"])

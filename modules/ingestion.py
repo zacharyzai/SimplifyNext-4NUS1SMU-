@@ -422,11 +422,20 @@ def ingestion_node(state: dict):
       expenses                       -- outgoings for add_expenses()
     If none of these yield any records, falls back to the benchmarks.json
     cold-start prior rather than returning an empty, UNKNOWN-forcing log.
+
+    When raw_text is present (most often Bob's real answer to a clarify
+    question, injected by server.py's /answer) but extract_from_text()
+    can't pull a usable figure out of it, that fact is surfaced directly
+    in this node's own trace record rather than silently falling through
+    to whatever data-gap forecast.py re-derives next -- a resurfaced
+    question with no explanation reads as a bug even when it's actually
+    just an unparseable answer.
     """
     delivery_log: List[dict] = []
     rows_in = 0
     rejection_reasons: List[str] = []
     sources_seen: List[str] = []
+    answer_text_unusable = False
 
     if state.get("raw_delivery_rows"):
         records, health = normalise_records(
@@ -449,6 +458,9 @@ def ingestion_node(state: dict):
         if transcribed:
             delivery_log += transcribed
             sources_seen.append("screenshot_ocr")
+            rows_in += len(transcribed)  # else rows_rejected = rows_in - accepted goes negative
+        else:
+            answer_text_unusable = True
 
     if state.get("expenses"):
         delivery_log = add_expenses(delivery_log, state["expenses"])
@@ -463,10 +475,18 @@ def ingestion_node(state: dict):
     health = _build_health([None] * rows_in, delivery_log, rejection_reasons, source="mixed")
     health["sources_seen"] = sources_seen or ["none"]
 
+    trace_record = build_trace(health)
+    if answer_text_unusable:
+        trace_record["concluded"] = (
+            "Couldn't extract a usable figure from your answer -- asking again. "
+            + trace_record["concluded"]
+        )
+        trace_record["degraded"] = True
+
     return {
         "delivery_log": delivery_log,
         "ingest_health": health,
-        "trace": [build_trace(health)],
+        "trace": [trace_record],
     }
 
 

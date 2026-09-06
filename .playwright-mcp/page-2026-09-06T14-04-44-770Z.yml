@@ -1,0 +1,38 @@
+- generic [active] [ref=f11e1]:
+  - banner [ref=f11e2]:
+    - generic [ref=f11e3]:
+      - heading "The Agentic Cash-Flow Copilot" [level=1] [ref=f11e4]
+      - paragraph [ref=f11e5]: Gig-income shortfall detection for Bob — every step it takes is shown on the right.
+    - generic [ref=f11e6]:
+      - generic [ref=f11e7]:
+        - generic [ref=f11e8]: Thread
+        - textbox "Thread" [ref=f11e9]: bob-001
+      - generic [ref=f11e10]:
+        - generic [ref=f11e11]: User
+        - textbox "User" [ref=f11e12]: bob-001
+  - status [ref=f11e13]: Ready.
+  - main [ref=f11e14]:
+    - generic [ref=f11e15]:
+      - generic [ref=f11e16]:
+        - generic [ref=f11e17]: Conclusion
+        - paragraph [ref=f11e18]: No run yet.
+        - paragraph [ref=f11e19]: Press "Run agent" to start a thread. The right column fills in one step at a time, exactly as the agent completes them.
+      - generic [ref=f11e20]:
+        - generic [ref=f11e21]: Earnings message optional — transcribed by the LLM
+        - paragraph [ref=f11e22]: Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it.
+        - 'textbox "e.g. \"Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.\"" [ref=f11e23]'
+      - generic [ref=f11e24]:
+        - generic [ref=f11e25]: "GET /run/{thread_id}/stream"
+        - generic [ref=f11e26]: POST /answer · POST /approve · POST /demo/reset
+    - generic [ref=f11e27]:
+      - generic [ref=f11e29]:
+        - button "Run agent" [ref=f11e30] [cursor=pointer]
+        - button "Simulate next Wednesday" [ref=f11e31] [cursor=pointer]
+        - generic [ref=f11e32]: idle
+        - button "Reset demo" [ref=f11e35] [cursor=pointer]
+      - generic [ref=f11e36]:
+        - generic [ref=f11e37]: Agent trace
+        - generic [ref=f11e38]: no thread yet
+      - generic [ref=f11e39]:
+        - paragraph [ref=f11e40]: No steps yet
+        - paragraph [ref=f11e41]: nothing renders here unless the agent actually ran the steppress “Run agent” to start a thread
