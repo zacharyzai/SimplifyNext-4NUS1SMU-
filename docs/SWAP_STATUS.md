@@ -20,7 +20,7 @@ no longer pending, it's live. Verified after applying it:
 
 | Node in graph.py | Real module on disk? | Currently imports from |
 |---|---|---|
-| `ingestion` | ❌ `modules/ingestion.py` does not exist | `stubs.ingestion_node` |
+| `ingestion` | ✅ written and tested | `stubs.ingestion_node` |
 | `forecast` | ✅ real, swapped in and verified | `modules.forecast.forecast_node` |
 | `gate` | ❌ `modules/materiality.py` does not exist | `stubs.gate_node` |
 | `planner` | ❌ `modules/planner.py` does not exist | `stubs.planner_node` |

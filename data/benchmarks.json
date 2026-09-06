@@ -1,0 +1,30 @@
+[
+  {
+    "platform": "Grab",
+    "time_block": "dinner",
+    "weekday": 5,
+    "median_net_per_hour_cents": 0,
+    "citation": "TODO: public source (e.g. MOM gig worker income survey / news report)"
+  },
+  {
+    "platform": "Grab",
+    "time_block": "lunch",
+    "weekday": 2,
+    "median_net_per_hour_cents": 0,
+    "citation": "TODO: public source"
+  },
+  {
+    "platform": "foodpanda",
+    "time_block": "dinner",
+    "weekday": 5,
+    "median_net_per_hour_cents": 0,
+    "citation": "TODO: public source"
+  },
+  {
+    "platform": "Lalamove",
+    "time_block": "afternoon",
+    "weekday": 3,
+    "median_net_per_hour_cents": 0,
+    "citation": "TODO: public source"
+  }
+]
