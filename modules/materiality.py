@@ -489,6 +489,24 @@ if __name__ == "__main__":
     very_stale_with_rent = score_staleness(very_stale_profile, bills_with_rent, today)
     assert very_stale_with_rent["fire"] is True, "very stale data WITH a bill at risk must still fire"
 
+    # Same regression, pinned at ingestion.py's actual "never observed"
+    # sentinel value (9999) rather than an arbitrary 20 -- this is the
+    # literal input a brand-new thread with zero delivery_log rows
+    # produces, so it must be covered directly, not just via a stand-in.
+    never_observed_profile = {"days_since_last_observation": 9999}
+    never_observed_no_bills = score_staleness(never_observed_profile, bills_far_off, today)
+    print(f"\n9999 days stale (never-observed sentinel), no bills for a month: "
+          f"fire={never_observed_no_bills['fire']} score={never_observed_no_bills['score']}")
+    assert never_observed_no_bills["fire"] is False, (
+        "the 'never observed' sentinel (9999) must not fire on its own -- "
+        "a thread that never had any history yet has nothing stale to report"
+    )
+    never_observed_with_rent = score_staleness(never_observed_profile, bills_with_rent, today)
+    assert never_observed_with_rent["fire"] is True, (
+        "the same sentinel WITH a genuinely due bill must still fire -- "
+        "the fix must not blanket-suppress the branch, only gate it on nearest_bill"
+    )
+
     print("\nSTEP 2 ASSERTS PASSED")
 
     print("\n" + "=" * 60)
