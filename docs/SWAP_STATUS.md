@@ -22,8 +22,8 @@ no longer pending, it's live. Verified after applying it:
 |---|---|---|
 | `ingestion` | ✅ written and tested | `stubs.ingestion_node` |
 | `forecast` | ✅ real, swapped in and verified | `modules.forecast.forecast_node` |
-| `gate` | ❌ `modules/materiality.py` does not exist | `stubs.gate_node` |
-| `planner` | ❌ `modules/planner.py` does not exist | `stubs.planner_node` |
+| `gate` | ✅ written and tested | `stubs.gate_node` |
+| `planner` | ✅ written and tested | `stubs.planner_node` |
 
 **1 of 4 nodes is swapped into `graph.py`.** The handbook's Step 4 "done
 when" criterion ("at least two real modules are swapped in") is still NOT
