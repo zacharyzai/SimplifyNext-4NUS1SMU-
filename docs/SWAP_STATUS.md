@@ -95,8 +95,8 @@ no longer pending, it's live. Verified after applying it:
 |---|---|---|
 | `ingestion` | ✅ real, swapped in and verified standalone (see 2026-09-06 note above; not yet run inside `graph.py` itself — `langgraph` not installed here) | `modules.ingestion.ingestion_node` |
 | `forecast` | ✅ real, swapped in and verified | `modules.forecast.forecast_node` |
-| `gate` | ❌ `modules/materiality.py` does not exist | `stubs.gate_node` |
-| `planner` | ❌ `modules/planner.py` does not exist | `stubs.planner_node` |
+| `gate` | ✅ written and tested | `stubs.gate_node` |
+| `planner` | ✅ written and tested | `stubs.planner_node` |
 
 **2 of 4 nodes are swapped into `graph.py`.** The handbook's Step 4 "done
 when" criterion ("at least two real modules are swapped in") is now met.
