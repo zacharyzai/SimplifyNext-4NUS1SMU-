@@ -362,9 +362,32 @@ def determine_confidence(days_observed: int, avg_precision: Optional[float],
     )
 
 
+def _bills_from_recurring(recurring_bills: List[dict], start_date) -> List[dict]:
+    """Converts Bob-stated {name, day_of_month, amount_cents} bills into the
+    {name, day_offset, amount_cents} shape _project() expects, anchored to
+    the first occurrence of that day-of-month within the projection window.
+    Malformed entries are skipped rather than raising (rule #4).
+    """
+    bills = []
+    for b in recurring_bills or []:
+        day_of_month = b.get("day_of_month")
+        amount_cents = b.get("amount_cents")
+        if not isinstance(day_of_month, int) or not isinstance(amount_cents, int):
+            continue
+        for offset in range(PROJECTION_DAYS):
+            if (start_date + timedelta(days=offset)).day == day_of_month:
+                bills.append({
+                    "name": b.get("name", "recurring bill"),
+                    "day_offset": offset,
+                    "amount_cents": amount_cents,
+                })
+                break
+    return bills
+
+
 # --- Step 5: orchestrating function + trace ---------------------------------
 
-def run_forecast(delivery_log: List[dict]) -> dict:
+def run_forecast(delivery_log: List[dict], recurring_bills: List[dict] = None) -> dict:
     """Pure function: delivery_log in, {forecast, cells, data_gaps,
     open_questions, trace} out. Never raises -- any unexpected shape in
     delivery_log degrades to an UNKNOWN-confidence result instead.
@@ -381,6 +404,7 @@ def run_forecast(delivery_log: List[dict]) -> dict:
         else:
             start_date = datetime.now(timezone.utc).date()
 
+        bills = DEMO_BILLS + _bills_from_recurring(recurring_bills, start_date)
         data_gaps = find_data_gaps(cells, start_date)
         open_questions = build_open_questions(data_gaps)
         avg_precision = weighted_precision(delivery_log)
@@ -399,7 +423,7 @@ def run_forecast(delivery_log: List[dict]) -> dict:
                 "confidence_reason": "No earnings history at all -- cannot project.",
                 "pessimistic": None,
                 "starting_balance_cents": DEMO_STARTING_BALANCE_CENTS,
-                "bills_considered": DEMO_BILLS,
+                "bills_considered": bills,
             }
             confidence = "UNKNOWN"
             confidence_reason = forecast["confidence_reason"]
@@ -407,8 +431,8 @@ def run_forecast(delivery_log: List[dict]) -> dict:
             baseline_daily = profile["median_daily_cents"]
             pessimistic_daily = round(baseline_daily * PESSIMISTIC_HAIRCUT)
 
-            baseline = _project(baseline_daily, start_date, DEMO_BILLS, DEMO_STARTING_BALANCE_CENTS)
-            pessimistic = _project(pessimistic_daily, start_date, DEMO_BILLS, DEMO_STARTING_BALANCE_CENTS)
+            baseline = _project(baseline_daily, start_date, bills, DEMO_STARTING_BALANCE_CENTS)
+            pessimistic = _project(pessimistic_daily, start_date, bills, DEMO_STARTING_BALANCE_CENTS)
 
             forecast = {
                 "generated_from_date": start_date.isoformat(),
@@ -427,7 +451,7 @@ def run_forecast(delivery_log: List[dict]) -> dict:
                     "worst_balance_cents": pessimistic["worst_balance_cents"],
                 },
                 "starting_balance_cents": DEMO_STARTING_BALANCE_CENTS,
-                "bills_considered": DEMO_BILLS,
+                "bills_considered": bills,
             }
 
         if forecast["shortfall_date"]:
@@ -494,7 +518,8 @@ def forecast_node(state: dict) -> Dict[str, Any]:
     hardcoded values.
     """
     delivery_log = state.get("delivery_log") or []
-    result = run_forecast(delivery_log)
+    recurring_bills = state.get("recurring_bills") or []
+    result = run_forecast(delivery_log, recurring_bills)
     return {
         "forecast": result["forecast"],
         "cells": result["cells"],
@@ -599,5 +624,19 @@ if __name__ == "__main__":
     node_update = forecast_node({"delivery_log": log_28})
     assert set(node_update.keys()) == {"forecast", "cells", "data_gaps", "open_questions", "trace"}
     assert isinstance(node_update["trace"], list) and len(node_update["trace"]) == 1
+
+    # --- Step 6: user-stated recurring bills merge into the projection ------
+    no_bill_result = run_forecast(log_28, recurring_bills=[])
+    with_bill_result = run_forecast(
+        log_28, recurring_bills=[{"name": "Netflix", "day_of_month": 5, "amount_cents": 1798}]
+    )
+    assert (with_bill_result["forecast"]["bills_considered"]
+            != no_bill_result["forecast"]["bills_considered"]), (
+        "a stated recurring bill must change the bill calendar actually used"
+    )
+    assert with_bill_result["forecast"]["worst_balance_cents"] <= no_bill_result["forecast"]["worst_balance_cents"]
+    malformed = run_forecast(log_28, recurring_bills=[{"name": "bad", "day_of_month": "not-a-day"}])
+    assert malformed["forecast"]["confidence"] != "UNKNOWN", "a malformed bill entry must be skipped, not crash the forecast"
+    print("Step 6 -- recurring_bills merge OK, malformed entries skipped without raising.")
 
     print("\nALL FORECAST TESTS PASSED")

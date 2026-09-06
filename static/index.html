@@ -68,10 +68,14 @@
       <button class="btn btn-dark" id="btn-submit-answer" type="button">Submit answer</button>
     </div>
 
-    <div class="card llm-card">
-      <span class="eyebrow">Earnings message <span class="eyebrow-hint">optional — transcribed by the LLM</span></span>
-      <p class="field-explainer">Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it.</p>
-      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot;"></textarea>
+    <div class="card chat-card">
+      <span class="eyebrow">Tell the agent something <span class="eyebrow-hint">optional — transcribed by the LLM, decided by Python</span></span>
+      <p class="field-explainer">Report earnings (a shift, a payout screenshot) or state a recurring bill to plan around. The agent classifies and transcribes only — every number and decision below is deterministic.</p>
+      <div class="chat-log" id="chat-log">
+        <p class="chat-empty" id="chat-empty">Nothing sent yet — try the example below.</p>
+      </div>
+      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot; or &quot;I have a $17.98 Netflix bill due on the 28th every month.&quot;"></textarea>
+      <button class="btn btn-outline" id="btn-send-raw-text" type="button">Send</button>
     </div>
 
     <div class="endpoints-footer">

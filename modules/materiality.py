@@ -190,12 +190,13 @@ def score_staleness(profile, upcoming_bills, today, last_alert=None):
                 f"No earnings seen for {days_since} days (past the {STALE_URGENT_DAYS}-day urgent threshold), "
                 f"and {nearest_bill['name']} is due in {nearest_days} day(s)."
             )
+            score = 90
         else:
-            reasons_for.append(
-                f"No earnings seen for {days_since} days -- past the {STALE_URGENT_DAYS}-day urgent threshold "
-                f"regardless of upcoming bills."
+            reasons_against.append(
+                f"{days_since} days stale (past the {STALE_URGENT_DAYS}-day urgent threshold), but no bills "
+                f"fall within the next {URGENCY_HORIZON_DAYS} days -- not worth an interruption yet."
             )
-        score = 90
+            score = 20
 
     suppressed_by = None
     if score >= MATERIALITY_THRESHOLD and last_alert and last_alert.get("signature") == signature:
@@ -346,7 +347,19 @@ def gate_node(state: dict):
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
     profile = {"median_daily_cents": forecast.get("daily_income_baseline_cents", 0)}
-    staleness_profile = {"days_since_last_observation": ingest_health.get("days_since_last_observation", 0)}
+
+    # ingestion.py's _build_health() uses days_since_last_observation=9999
+    # as a sentinel meaning "no dated observations at all" (an empty log,
+    # or the benchmark_prior cold-start fallback -- neither of which is
+    # Bob's real history going dark). Staleness is about data that USED TO
+    # exist and stopped, not about a thread that never had any yet -- so a
+    # cold-start thread (sources_seen is exactly ["benchmark_prior"], or
+    # nothing was ingested at all) must not be scored as urgently stale on
+    # its very first run.
+    sources_seen = ingest_health.get("sources_seen") or []
+    cold_start = sources_seen in ([], ["none"], ["benchmark_prior"])
+    days_since = 0 if cold_start else ingest_health.get("days_since_last_observation", 0)
+    staleness_profile = {"days_since_last_observation": days_since}
 
     upcoming_bills = []
     gen_from = forecast.get("generated_from_date")
@@ -460,6 +473,22 @@ if __name__ == "__main__":
     assert stale_with_rent["fire"] is True, "staleness with a bill inside the horizon must fire"
     assert stale_no_bills["fire"] is False, "staleness with no bills at risk must stay silent"
 
+    # Regression: the >=STALE_URGENT_DAYS branch used to fire score=90
+    # unconditionally, ignoring nearest_bill entirely -- unlike the
+    # STALE_WARN..STALE_URGENT branch just above it, which already gated on
+    # nearest_bill correctly. 20 days stale (past STALE_URGENT_DAYS) with no
+    # bills nearby must stay silent the same way 11 days stale does.
+    very_stale_profile = {"days_since_last_observation": 20}
+    very_stale_no_bills = score_staleness(very_stale_profile, bills_far_off, today)
+    print(f"\n20 days stale (past urgent threshold), no bills for a month: "
+          f"fire={very_stale_no_bills['fire']} score={very_stale_no_bills['score']}")
+    assert very_stale_no_bills["fire"] is False, (
+        "very stale data with nothing at risk must still stay silent -- "
+        "staleness alone is not material, an at-risk bill is what makes it material"
+    )
+    very_stale_with_rent = score_staleness(very_stale_profile, bills_with_rent, today)
+    assert very_stale_with_rent["fire"] is True, "very stale data WITH a bill at risk must still fire"
+
     print("\nSTEP 2 ASSERTS PASSED")
 
     print("\n" + "=" * 60)
@@ -549,5 +578,30 @@ if __name__ == "__main__":
     print(f"\nSame $112 shortfall at LOW confidence: score={low_result['score']} (vs HIGH: {real_result['score']})")
     assert low_result["score"] < real_result["score"], "LOW confidence must score lower than HIGH for the same shortfall"
     assert low_result["fire"] is False, "the confidence penalty should be enough to keep this below threshold"
+
+    print("\n" + "=" * 60)
+    print("STEP 5: gate_node() -- cold start must not read as staleness")
+    print("=" * 60)
+
+    # ingestion.py's sentinel for "no dated observations at all" is
+    # days_since_last_observation=9999 -- a brand-new thread that fell back
+    # to the benchmark_prior cold-start prior (sources_seen ==
+    # ["benchmark_prior"]) must not have that sentinel misread as "9999
+    # days of real silence" and fire an urgent staleness alert on its very
+    # first run.
+    cold_start_state = {
+        "forecast": {
+            "generated_from_date": today_day0,
+            "bills_considered": [{"name": "Phone bill", "day_offset": 3, "amount_cents": 3800}],
+        },
+        "ingest_health": {"sources_seen": ["benchmark_prior"], "days_since_last_observation": 9999},
+    }
+    cold_start_result = gate_node(cold_start_state)
+    print(f"\nCold-start thread (benchmark_prior only): fire={cold_start_result['materiality_flag']['fire']} "
+          f"score={cold_start_result['materiality_flag']['score']}")
+    assert cold_start_result["materiality_flag"]["fire"] is False, (
+        "a thread that never had any real history yet must not fire a staleness "
+        "alert just because ingestion's 'no dated data' sentinel looks like 9999 days"
+    )
 
     print("\nALL DECISION LAYER TESTS PASSED (materiality.py)")
