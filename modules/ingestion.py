@@ -19,14 +19,25 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
-from typing import List
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 
 # Makes "from shared.money import ..." work no matter what folder you run
 # this file from -- it points Python at the repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from shared.money import cents_from_string, format_cents
+
+# Same value and same purpose as modules/forecast.py's ASSUMED_SHIFT_HOURS
+# (cross-referenced, not imported -- ingestion.py and forecast.py are
+# independent, standalone-runnable modules by convention, same as
+# materiality.py/planner.py's duplicated _CONSTRAINT_STOPWORDS). A clarify
+# answer like "$50" states a per-shift amount with no explicit duration;
+# without SOME positive hours value the record would count toward a
+# cell's `observations` (see forecast.py's build_cell_profiles) but never
+# actually contribute a $/hour rate, silently defeating the entire point
+# of answering the question.
+ASSUMED_SHIFT_HOURS_FOR_CLARIFY_ANSWER = 4.0
 
 SOURCE_PRECISION = {
     "partner_statement": 1.0,   # weekly platform statement, per-trip, authoritative
@@ -85,6 +96,32 @@ def _parse_date(raw):
         except ValueError:
             continue
     return None
+
+
+def _record_cell_key(record: dict) -> Optional[Tuple[str, int, str]]:
+    """(platform, weekday, time_block) for a record -- mirrors
+    modules/forecast.py's build_cell_profiles() grouping exactly (benchmark
+    rows carry weekday directly since they have no real date; everything
+    else derives it from the observed date), so ingestion_node's benchmark
+    carry-forward decision groups records into the same cells forecast.py
+    will. Returns None if there isn't enough info to place the record in a
+    cell at all (e.g. no platform/time_block, or an unparseable/missing
+    date on a non-benchmark record).
+    """
+    platform = record.get("platform")
+    time_block = record.get("time_block")
+    if not platform or not time_block:
+        return None
+    weekday = record.get("weekday")
+    if weekday is None:
+        date = record.get("date")
+        if not date:
+            return None
+        try:
+            weekday = datetime.strptime(date, "%Y-%m-%d").weekday()
+        except ValueError:
+            return None
+    return (platform, weekday, time_block)
 
 
 def normalise_records(raw_rows, source):
@@ -151,7 +188,11 @@ def normalise_records(raw_rows, source):
                 "precision": precision,
             }
 
-            dedup_key = (date, platform, gross_cents, trips)
+            # time_block included: two real shifts on the same day, same
+            # platform, same gross/trips but a DIFFERENT time_block (e.g. a
+            # $50 lunch and a $50 dinner) are legitimately two shifts, not
+            # an accidental resubmission of one.
+            dedup_key = (date, platform, time_block, gross_cents, trips)
             if dedup_key in seen_keys:
                 rejection_reasons.append(f"row {i}: duplicate of an earlier row {dedup_key}")
                 continue
@@ -373,6 +414,112 @@ def extract_from_text(raw_text):
     records, _health = normalise_records(parsed_rows, source="screenshot_ocr")
     return records
 
+
+EXTRACT_AMOUNT_SYSTEM_PROMPT = (
+    "Extract a single dollar amount from this message, ONLY if one is "
+    "clearly and specifically stated -- \"$50\", \"about fifty bucks\", and "
+    "\"50 dollars\" all count as the SAME amount, 50.00 (spelled-out or "
+    "word-form numbers must be converted to digits -- that is "
+    "transcription of the number the user already gave, not estimation). "
+    "Do NOT invent, estimate, average, or guess a number if the message is "
+    "vague and states no figure at all (e.g. \"not sure\", \"pretty good\", "
+    "\"decent amount\", \"depends on the day\"). "
+    "Return ONLY JSON: {\"amount\": \"50.00\"} as a plain digit string "
+    "(never a word like \"fifty\"), or {\"amount\": null} if no specific "
+    "figure is given. No prose, no markdown code fences."
+)
+
+
+def extract_amount_from_text(raw_text: str) -> Optional[int]:
+    """Pulls a single dollar figure (in cents) out of free text answering
+    a targeted clarify question -- e.g. "$50" or "about fifty bucks".
+
+    Deliberately much narrower than extract_from_text(): this has exactly
+    one job (a number), not a full date/platform/trips/hours record, so a
+    reply that only ever promised a ballpark isn't held to a receipt's
+    standard. Same anti-hallucination posture as the rest of this file:
+    returns None (never a fabricated number) whenever no clear amount is
+    stated, so the caller can correctly treat it the same as any other
+    unusable answer.
+    """
+    content = converse(EXTRACT_AMOUNT_SYSTEM_PROMPT, raw_text)
+    if content is None:
+        return None
+    try:
+        if content.startswith("```"):
+            content = content.strip("`").replace("json\n", "", 1)
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    amount = parsed.get("amount") if isinstance(parsed, dict) else None
+    if amount in (None, ""):
+        return None
+    try:
+        cents = cents_from_string(amount)
+    except ValueError:
+        return None
+    return cents if cents >= 0 else None
+
+
+def _most_recent_date_for_weekday(weekday: int, today=None) -> str:
+    """Any past date landing on the given weekday (Monday=0..Sunday=6, same
+    convention as Python's date.weekday() and forecast.py's
+    find_data_gaps()) -- the exact day doesn't matter for a rough recall
+    answer like "$50 on one of those [Fridays]", only which weekday it
+    lands in, since that's the only thing build_cell_profiles() groups by.
+    A 7-day lookback always contains every weekday exactly once.
+    """
+    today = today or datetime.utcnow().date()
+    for days_back in range(1, 8):
+        candidate = today - timedelta(days=days_back)
+        if candidate.weekday() == weekday:
+            return candidate.strftime("%Y-%m-%d")
+    return today.strftime("%Y-%m-%d")  # unreachable -- every weekday appears within 7 days
+
+
+def _extract_clarify_answer(raw_text: str, data_gaps: List[dict]) -> List[dict]:
+    """Builds a record for a reply to a pending clarify question WITHOUT
+    asking the LLM to invent a date, platform, or full record shape.
+
+    ROOT CAUSE this replaces a context-injection LLM fix for: forecast.py's
+    build_open_questions() explicitly asks for a rough estimate ("roughly
+    what do you make on one of those?"), but extract_from_text() demands a
+    literal stated date ("never guess one") and a full record shape. The
+    question promises a ballpark; the old path demanded a receipt -- that
+    mismatch, not LLM parsing quality, is why plain answers like "$50" kept
+    getting rejected. The fix: everything except the dollar amount is
+    already known, deterministically, from data_gaps[0] -- the exact
+    structured gap this question was generated from (same order as
+    open_questions, forecast.py's find_data_gaps()) -- so there is nothing
+    left for the LLM to guess at except the one number the question
+    actually asked for.
+
+    Returns [] (never a fabricated record) if data_gaps is empty or no
+    clear amount is stated in raw_text -- the clarify loop then correctly
+    re-asks, exactly like an unparseable extract_from_text() answer always
+    has.
+    """
+    if not data_gaps:
+        return []
+    gap = data_gaps[0]
+    amount_cents = extract_amount_from_text(raw_text)
+    if amount_cents is None:
+        return []
+    return [{
+        "date": _most_recent_date_for_weekday(gap["weekday"]),
+        "platform": gap["platform"],
+        "time_block": gap["time_block"],
+        "gross_cents": amount_cents,
+        "tip_cents": 0,
+        "platform_fee_cents": 0,
+        "net_cents": amount_cents,
+        "trips": 0,
+        "hours": ASSUMED_SHIFT_HOURS_FOR_CLARIFY_ANSWER,
+        "source": "self_reported_shift_log",
+        "precision": 0.4,  # same tier forecast.py's own confidence tests use for self-reported recall
+    }]
+
+
 def build_trace(ingest_health):
     """One append-only trace record in the shared shape, describing what
     ingestion checked and found -- including sources that returned
@@ -464,7 +611,22 @@ def ingestion_node(state: dict):
         rejection_reasons += health["rejection_reasons"]
 
     if state.get("raw_text"):
-        transcribed = extract_from_text(state["raw_text"])
+        # loop_count > 0 here can only mean clarify_node already ran
+        # earlier in this SAME resume chain and incremented it (see
+        # graph.py's clarify_node) -- every FRESH run explicitly resets
+        # loop_count to 0 before ingestion ever executes (graph.run_agent(),
+        # server.py's /run/{id}/stream), so this can't be mistaken for an
+        # ordinary new earnings message arriving on a thread that merely
+        # has a stale open_questions sitting in checkpointed state from an
+        # earlier, already-settled run. Combined with a non-empty
+        # open_questions (so there's an actual gap to answer), this is the
+        # existing, reliable signal for "this raw_text is Bob's reply to
+        # the clarify question currently on screen," not a fresh report.
+        is_clarify_answer = state.get("loop_count", 0) > 0 and bool(state.get("open_questions"))
+        if is_clarify_answer:
+            transcribed = _extract_clarify_answer(state["raw_text"], state.get("data_gaps") or [])
+        else:
+            transcribed = extract_from_text(state["raw_text"])
         if transcribed:
             new_records += transcribed
             rows_in += len(transcribed)  # else rows_rejected = rows_in - accepted goes negative
@@ -475,13 +637,43 @@ def ingestion_node(state: dict):
         new_records = add_expenses(new_records, state["expenses"])
 
     previous_log = state.get("delivery_log") or []
-    carried_forward = [r for r in previous_log if r.get("source") != "benchmark_prior"]
+    previous_real = [r for r in previous_log if r.get("source") != "benchmark_prior"]
+    previous_benchmark = [r for r in previous_log if r.get("source") == "benchmark_prior"]
+
+    # Only drop a benchmark seed once ITS OWN (platform, weekday, time_block)
+    # cell has real data reaching MIN_OBSERVATIONS -- not the instant ANY
+    # real record exists anywhere. Dropping it unconditionally (the
+    # previous behavior) meant the very first real answer to a
+    # benchmark-seeded clarify question REPLACED that cell's "1 observation"
+    # instead of adding to it -- the same cell, same count, same question
+    # word-for-word, looking exactly like the answer had done nothing.
+    # MIN_OBSERVATIONS is duplicated from modules/forecast.py rather than
+    # imported, matching this file's standalone-module convention (same as
+    # materiality.py/planner.py's duplicated _CONSTRAINT_STOPWORDS) --
+    # forecast.py's build_cell_profiles() is the actual source of truth
+    # this must stay in sync with.
+    MIN_OBSERVATIONS = 3
+    real_cell_counts: Dict[tuple, int] = {}
+    for record in previous_real + new_records:
+        key = _record_cell_key(record)
+        if key is not None:
+            real_cell_counts[key] = real_cell_counts.get(key, 0) + 1
+    carried_forward_benchmark = [
+        r for r in previous_benchmark
+        if real_cell_counts.get(_record_cell_key(r), 0) < MIN_OBSERVATIONS
+    ]
+    carried_forward = previous_real + carried_forward_benchmark
 
     delivery_log: List[dict] = []
     if new_records or carried_forward:
         dedup_seen = set()
         for record in carried_forward + new_records:
-            key = (record.get("date"), record.get("platform"), record.get("gross_cents"), record.get("trips"))
+            # time_block included: without it, two carried-forward benchmark
+            # rows for the same platform (date=None, gross_cents=0, trips=0
+            # for every benchmark entry) collide on this key and one is
+            # silently dropped as a "duplicate" of the other, even though
+            # they're different (weekday, time_block) cells entirely.
+            key = (record.get("date"), record.get("platform"), record.get("time_block"), record.get("gross_cents"), record.get("trips"))
             if key in dedup_seen:
                 continue
             dedup_seen.add(key)
@@ -613,6 +805,34 @@ if __name__ == "__main__":
     transcribed = extract_from_text(payout_message)
     print(f"\n{len(transcribed)} records transcribed (0 unless LLM_PROVIDER is set to a working provider).")
 
+    # _extract_clarify_answer(): a reply to a pending clarify question gets
+    # everything except the dollar amount from data_gaps[0] -- the question
+    # promised a ballpark, not a receipt, so a bare "$50" (no date, no
+    # platform) must land here even though it would be correctly rejected
+    # by the plain extract_from_text() path above. Gracefully tolerant of
+    # no LLM configured, same as the plain case just above.
+    sample_gap = [{"platform": "Grab", "weekday": 4, "time_block": "dinner", "observations": 1, "days_until": 1}]
+    clarify_result = _extract_clarify_answer("$50", sample_gap)
+    print(f"\n_extract_clarify_answer('$50', ...): {clarify_result}")
+    if clarify_result:
+        record = clarify_result[0]
+        assert record["platform"] == "Grab" and record["time_block"] == "dinner", (
+            "platform/time_block must come from data_gaps[0], not be left for the LLM to guess"
+        )
+        assert record["gross_cents"] == 5000 == record["net_cents"]
+        assert record["source"] == "self_reported_shift_log" and record["precision"] == 0.4
+        assert record["hours"] > 0, "hours must be positive or this record can never contribute a $/hour rate"
+        from datetime import datetime as _dt
+        assert _dt.strptime(record["date"], "%Y-%m-%d").weekday() == 4, "the chosen date must actually land on the asked-about weekday"
+
+        no_amount_result = _extract_clarify_answer("not sure", sample_gap)
+        assert no_amount_result == [], (
+            "a vague reply with no stated figure must still return no usable record, "
+            "so the clarify loop correctly re-asks instead of accepting a fabricated $0"
+        )
+        print("_extract_clarify_answer correctly built the record from data_gaps[0], "
+              "and correctly returned [] for a reply with no stated amount.")
+
     print("\nSTEP 4 COMPLETED (ran to completion with no LLM provider configured)")
     print("\n" + "=" * 60)
     print("STEP 5: build_trace() + hostile input test suite")
@@ -728,24 +948,72 @@ if __name__ == "__main__":
     assert len(node_result_3["delivery_log"]) == 2, "resubmitting the same raw_source rows must de-duplicate, not grow"
 
     # A cold-start thread that only ever got a benchmark_prior fallback, then
-    # LATER gets a real shift, must drop the placeholder rather than average
-    # a real logged shift together with four fabricated cold-start rows.
+    # LATER gets real shifts, must drop each benchmark row ONLY once ITS OWN
+    # (platform, weekday, time_block) cell has enough real data
+    # (MIN_OBSERVATIONS) to stand alone -- not the whole placeholder,
+    # globally, the instant ANY real data lands anywhere.
+    #
+    # CORRECTED 2026-09-07: this test previously asserted the cruder, wrong
+    # invariant ("the benchmark_prior placeholder must be dropped the
+    # moment real data lands") -- that behavior was itself the root cause
+    # of a real production bug: a clarify question about a benchmark-seeded
+    # cell (e.g. "You've only logged 1 Grab lunch shift...") would have its
+    # FIRST real answer silently REPLACE that cell's one observation
+    # instead of adding to it, since the benchmark row got wiped out
+    # globally the instant any real data existed anywhere -- net
+    # observation count for that cell never moved, so the same question
+    # kept getting asked, verbatim, forever. Since forecast.py's
+    # build_cell_profiles() already segregates strictly by cell, the old
+    # worry about "averaging a real shift together with four fabricated
+    # cold-start rows" never actually applied -- different cells are never
+    # blended regardless of source.
+    #
+    # node_state_run1's shift (2026-08-15, Grab, dinner) happens to land on
+    # a Saturday -- the exact same cell as data/benchmarks.json's "Grab
+    # dinner" entry (weekday=5) -- which is what makes it a good test of
+    # same-cell replacement specifically, not just presence/absence.
     cold_start_result = ingestion_node({})
     assert cold_start_result["ingest_health"]["sources_seen"] == ["benchmark_prior"]
-    warmed_up_result = ingestion_node({
+
+    one_real_shift_result = ingestion_node({
         "delivery_log": cold_start_result["delivery_log"],
         "raw_delivery_rows": node_state_run1["raw_delivery_rows"],
         "raw_source": "self_reported",
     })
-    assert warmed_up_result["ingest_health"]["sources_seen"] == ["self_reported"], (
-        "the benchmark_prior placeholder must be dropped the moment real data lands"
+    assert set(one_real_shift_result["ingest_health"]["sources_seen"]) == {"self_reported", "benchmark_prior"}, (
+        "with only 1 real observation for the Grab-dinner-Saturday cell (below "
+        "MIN_OBSERVATIONS=3), its benchmark seed -- AND the 3 other still-thin "
+        "benchmark cells -- must all still be present, not wiped out globally"
     )
-    assert len(warmed_up_result["delivery_log"]) == 1
+    assert len(one_real_shift_result["delivery_log"]) == 5, "1 real shift + all 4 still-thin benchmark rows"
+
+    # Two more real shifts for the SAME cell (Grab, Saturday, dinner) --
+    # now that specific cell has 3 real observations and should finally
+    # drop its own benchmark seed, while the OTHER 3 benchmark cells
+    # (still zero real data) remain untouched.
+    more_shifts_state = {
+        "delivery_log": one_real_shift_result["delivery_log"],
+        "raw_delivery_rows": [
+            {"date": "2026-08-22", "platform": "Grab", "start_hour": 18, "gross_cents": "72.00", "trips": 5, "hours": 4.0},
+            {"date": "2026-08-29", "platform": "Grab", "start_hour": 18, "gross_cents": "68.00", "trips": 5, "hours": 4.0},
+        ],
+        "raw_source": "self_reported",
+    }
+    three_real_shifts_result = ingestion_node(more_shifts_state)
+    benchmark_rows_left = [r for r in three_real_shifts_result["delivery_log"] if r.get("source") == "benchmark_prior"]
+    assert len(benchmark_rows_left) == 3, (
+        "the Grab-dinner-Saturday cell's own benchmark seed must be gone now that "
+        "it has 3 real observations, but the other 3 still-thin benchmark cells must remain"
+    )
+    assert not any(r.get("platform") == "Grab" and r.get("weekday") == 5 for r in benchmark_rows_left), (
+        "specifically the now-superseded Grab-dinner-Saturday benchmark row must be the one dropped"
+    )
 
     print(f"Run 1 (1 shift submitted):              delivery_log has {len(node_result_1['delivery_log'])} record(s)")
     print(f"Run 2 (2nd shift submitted separately):  delivery_log has {len(node_result_2['delivery_log'])} record(s) -- both kept")
     print(f"Run 3 (same shift resubmitted):          delivery_log has {len(node_result_3['delivery_log'])} record(s) -- deduplicated")
-    print(f"Cold start -> real data: benchmark_prior dropped, sources_seen={warmed_up_result['ingest_health']['sources_seen']}")
+    print(f"Cold start + 1 real shift: benchmark kept for still-thin cells, sources_seen={one_real_shift_result['ingest_health']['sources_seen']}")
+    print(f"Cold start + 3 real shifts (same cell): that cell's benchmark row dropped, {len(benchmark_rows_left)} unrelated benchmark rows remain")
     print("\nSTEP 6 ASSERTS PASSED -- delivery_log now genuinely accumulates across ingestion_node calls")
 
     print("\nALL INGESTION TESTS PASSED")

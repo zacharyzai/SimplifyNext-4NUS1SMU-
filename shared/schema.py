@@ -31,6 +31,22 @@ TIER_APPROVAL = 2    # irreversible or material -> agent halts, asks Bob
 # --- Replanning ----------------------------------------------------------------
 MAX_REPLAN_LOOPS = 2  # hard ceiling on the low-confidence replanning cycle
 
+# FLAGGED EXTENSION (2026-09-07): MAX_REPLAN_LOOPS only bounds one
+# CONTINUOUS clarify session -- every fresh graph.stream(inputs, ...) call
+# (any new raw_text sent while nothing is paused, a BILL-classified
+# message, or a plain new /run) explicitly sets loop_count back to 0 as
+# part of its input dict (see server.py's /run/{id}/stream and
+# graph.run_agent()). Verified directly: a thread paused mid-clarify with
+# loop_count=1 resets to loop_count=0 the moment a fresh stream() call
+# lands on it -- so MAX_REPLAN_LOOPS alone cannot bound how many total
+# questions a thread gets asked across its whole life, only how many it
+# gets asked in one uninterrupted back-and-forth. total_clarify_rounds
+# (below) is a SEPARATE counter for exactly this: incremented by
+# clarify_node every time it actually asks a question, never reset by a
+# fresh run the way loop_count is, so it accumulates across the thread's
+# entire life regardless of how many separate stream() calls land on it.
+MAX_TOTAL_CLARIFY_ROUNDS = 6  # thread-level ceiling, independent of MAX_REPLAN_LOOPS
+
 
 class CashFlowState(TypedDict, total=False):
     user_id: str
@@ -78,9 +94,16 @@ class CashFlowState(TypedDict, total=False):
     trace: Annotated[List[dict], operator.add]
 
     tool_health: dict             # Member 1 (shared/resilience.py merge_tool_health output)
-    loop_count: int               # Member 1 -- bounded by MAX_REPLAN_LOOPS
+    loop_count: int               # Member 1 -- bounded by MAX_REPLAN_LOOPS, reset every fresh run
     awaiting_approval: bool       # Member 1 -- human-in-the-loop gate
     user_constraints: List[str]   # persisted across sessions via the checkpointer
+
+    # FLAGGED EXTENSION (2026-09-07, same category as recurring_bills above):
+    # thread-level clarify counter, bounded by MAX_TOTAL_CLARIFY_ROUNDS.
+    # Unlike loop_count, this is NEVER reset by a fresh run -- it only ever
+    # goes up, for the thread's entire life, so it's what actually stops an
+    # unbounded number of total questions across repeated new-info restarts.
+    total_clarify_rounds: int
 
 
 if __name__ == "__main__":
@@ -94,7 +117,12 @@ if __name__ == "__main__":
     }
     assert TIER_AUTONOMOUS < TIER_NOTIFY < TIER_APPROVAL
     assert MAX_REPLAN_LOOPS >= 1
+    assert MAX_TOTAL_CLARIFY_ROUNDS > MAX_REPLAN_LOOPS, (
+        "the thread-level cap must be looser than one run's cap, or it would "
+        "trigger before a single continuous clarify session even finishes"
+    )
     print("shared/schema.py OK")
     print("CashFlowState demo:", demo_state)
     print("Tiers:", TIER_AUTONOMOUS, TIER_NOTIFY, TIER_APPROVAL)
     print("MAX_REPLAN_LOOPS:", MAX_REPLAN_LOOPS)
+    print("MAX_TOTAL_CLARIFY_ROUNDS:", MAX_TOTAL_CLARIFY_ROUNDS)

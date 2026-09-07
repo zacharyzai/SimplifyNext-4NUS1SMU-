@@ -22,7 +22,7 @@ from typing import Any, Dict, List
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
-from shared.schema import CashFlowState, MAX_REPLAN_LOOPS, TIER_APPROVAL
+from shared.schema import CashFlowState, MAX_REPLAN_LOOPS, MAX_TOTAL_CLARIFY_ROUNDS, TIER_APPROVAL
 # from stubs import forecast_node  # SWAPPED OUT 2026-09-05 -- kept here as the
 # fallback import; uncomment this and comment out the real import below if
 # modules/forecast.py ever regresses and blocks the demo.
@@ -61,6 +61,12 @@ def clarify_node(state: CashFlowState) -> Dict[str, Any]:
     """
     questions = state.get("open_questions", [])
     loop_count = state.get("loop_count", 0) + 1
+    # total_clarify_rounds (shared/schema.py, flagged extension) is NEVER
+    # reset by a fresh run the way loop_count is -- see MAX_TOTAL_CLARIFY_ROUNDS's
+    # docstring there. It only increments here, in the one place a question
+    # is actually asked, so it accumulates across the thread's entire life
+    # regardless of how many separate stream()/run_agent() calls land on it.
+    total_clarify_rounds = state.get("total_clarify_rounds", 0) + 1
     found: Dict[str, Any] = {}
     if os.environ.get("CASHFLOW_DEMO_SIMULATE_ANSWERS") == "1":
         found["example_answer_for_demo_only"] = {
@@ -73,12 +79,67 @@ def clarify_node(state: CashFlowState) -> Dict[str, Any]:
         "found": found,
         "concluded": (
             f"Confidence was not HIGH, so asked {len(questions)} targeted "
-            f"question(s) instead of guessing (replan loop {loop_count}/{MAX_REPLAN_LOOPS})."
+            f"question(s) instead of guessing (replan loop {loop_count}/{MAX_REPLAN_LOOPS} "
+            f"this run, {total_clarify_rounds}/{MAX_TOTAL_CLARIFY_ROUNDS} total for this thread)."
         ),
         "confidence": "LOW",
         "degraded": True,
     }
-    return {"loop_count": loop_count, "trace": [trace]}
+    return {"loop_count": loop_count, "total_clarify_rounds": total_clarify_rounds, "trace": [trace]}
+
+
+def forecast_node_with_replan_trace(state: CashFlowState) -> Dict[str, Any]:
+    """Thin wrapper around modules.forecast.forecast_node -- adds exactly
+    ONE extra trace entry, owned HERE (not in modules/forecast.py, which
+    stays purely about the numbers, never about the replanning decision),
+    explaining -- whenever confidence isn't HIGH -- which of the two
+    replanning caps (if either) is about to stop route_after_forecast from
+    sending the run back to clarify. It reads the exact same fields
+    (loop_count, total_clarify_rounds) that route_after_forecast checks
+    immediately after this node runs, so the explanation can never
+    silently drift out of sync with the actual routing decision.
+
+    Without this, a judge reading the trace after a thread hits the
+    thread-level cap would see forecast_engine report non-HIGH confidence
+    and then jump straight to materiality_gate with no clarify step at
+    all -- indistinguishable from a bug, unless something says why.
+    """
+    result = forecast_node(state)
+    confidence = (result.get("forecast") or {}).get("confidence")
+    if confidence and confidence != "HIGH":
+        loop_count = state.get("loop_count", 0)
+        total_clarify_rounds = state.get("total_clarify_rounds", 0)
+        note = None
+        if total_clarify_rounds >= MAX_TOTAL_CLARIFY_ROUNDS:
+            note = (
+                f"Thread-level clarify cap reached ({total_clarify_rounds}/"
+                f"{MAX_TOTAL_CLARIFY_ROUNDS} total rounds across this thread's "
+                f"whole life) -- proceeding with the best available data instead "
+                f"of asking again, even though this run's own loop_count "
+                f"({loop_count}) hasn't hit the per-run cap ({MAX_REPLAN_LOOPS})."
+            )
+        elif loop_count >= MAX_REPLAN_LOOPS:
+            note = (
+                f"Per-run replan cap reached (loop_count {loop_count}/{MAX_REPLAN_LOOPS} "
+                f"this run) -- proceeding with the best available data instead of "
+                f"asking again this run (thread total so far: {total_clarify_rounds}/"
+                f"{MAX_TOTAL_CLARIFY_ROUNDS})."
+            )
+        if note:
+            result = dict(result)
+            result["trace"] = list(result.get("trace", [])) + [{
+                "node": "forecast_engine",
+                "ts": _now_iso(),
+                "checked": ["loop_count vs MAX_REPLAN_LOOPS", "total_clarify_rounds vs MAX_TOTAL_CLARIFY_ROUNDS"],
+                "found": {
+                    "loop_count": loop_count, "MAX_REPLAN_LOOPS": MAX_REPLAN_LOOPS,
+                    "total_clarify_rounds": total_clarify_rounds, "MAX_TOTAL_CLARIFY_ROUNDS": MAX_TOTAL_CLARIFY_ROUNDS,
+                },
+                "concluded": note,
+                "confidence": confidence,
+                "degraded": True,
+            }]
+    return result
 
 
 def execute_node(state: CashFlowState) -> Dict[str, Any]:
@@ -103,9 +164,19 @@ def execute_node(state: CashFlowState) -> Dict[str, Any]:
 # edge. The model never makes any of these decisions. ------------------------
 
 def route_after_forecast(state: CashFlowState) -> str:
-    """Low confidence must trigger action, not a shrug."""
+    """Low confidence must trigger action, not a shrug.
+
+    Two independent caps gate the "ask again" branch: loop_count (reset to
+    0 by every fresh run -- see graph.run_agent()/server.py's
+    /run/{id}/stream) bounds one continuous back-and-forth, and
+    total_clarify_rounds (never reset by a fresh run) bounds the thread's
+    entire life. Either one being exhausted is enough to stop asking and
+    fall back to the best available data -- see
+    forecast_node_with_replan_trace() for the trace explaining which.
+    """
     if (state["forecast"]["confidence"] != "HIGH"
-            and state.get("loop_count", 0) < MAX_REPLAN_LOOPS):
+            and state.get("loop_count", 0) < MAX_REPLAN_LOOPS
+            and state.get("total_clarify_rounds", 0) < MAX_TOTAL_CLARIFY_ROUNDS):
         return "gather_more"
     return "materiality_gate"
 
@@ -135,7 +206,7 @@ def route_after_planner(state: CashFlowState) -> str:
 
 _builder = StateGraph(CashFlowState)
 _builder.add_node("ingestion", ingestion_node)
-_builder.add_node("forecast", forecast_node)
+_builder.add_node("forecast", forecast_node_with_replan_trace)
 _builder.add_node("clarify", clarify_node)
 _builder.add_node("gate", gate_node)
 _builder.add_node("planner", planner_node)
@@ -390,5 +461,48 @@ if __name__ == "__main__":
     _print_trace(state_c_resumed)
     assert state_c_resumed.get("awaiting_approval") is False
     print("   Resumed after approval: awaiting_approval =", state_c_resumed["awaiting_approval"])
+
+    # --- Demo (d): thread-level clarify cap stops indefinite re-asking -----
+    # Reproduces the exact gap this fix closes: repeated FRESH restarts
+    # (run_agent() with real inputs, exactly what a new raw_text/scenario
+    # via server.py's /run/{id}/stream does) each reset loop_count back to
+    # 0 -- so the per-run cap (MAX_REPLAN_LOOPS=2) never gets a chance to
+    # fire, since we only ever resume ONCE per restart before restarting
+    # again. total_clarify_rounds is untouched by these resets, so it
+    # climbs by exactly 1 per cycle regardless -- proving it's the NEW
+    # thread-level cap doing the stopping here, not the pre-existing
+    # per-run one (which this test deliberately never lets trigger).
+    print("\n=== Demo (d): thread-level clarify cap (repeated fresh restarts) ===")
+    CAP_THREAD = "bob-demo-cap"
+    cap_config = {"configurable": {"thread_id": CAP_THREAD}}
+    cycles = 0
+    for cycles in range(1, MAX_TOTAL_CLARIFY_ROUNDS + 3):
+        run_agent(
+            user_id="bob-001", thread_id=CAP_THREAD,
+            inputs={"raw_delivery_rows": thin_history, "raw_source": "partner_statement"},
+        )
+        if "clarify" not in graph.get_state(cap_config).next:
+            break
+        graph.invoke(None, config=cap_config)  # resume exactly once, then restart fresh again
+    cap_state = graph.get_state(cap_config).values
+    _print_trace(cap_state)
+    print(f"   Stopped after {cycles} fresh-restart cycles.")
+    print(f"   total_clarify_rounds={cap_state.get('total_clarify_rounds')} "
+          f"(cap={MAX_TOTAL_CLARIFY_ROUNDS}), loop_count={cap_state.get('loop_count')} "
+          f"(per-run cap={MAX_REPLAN_LOOPS})")
+    assert cap_state.get("total_clarify_rounds", 0) >= MAX_TOTAL_CLARIFY_ROUNDS, (
+        "expected the thread-level cap to actually be reached"
+    )
+    assert cap_state.get("loop_count", 0) < MAX_REPLAN_LOOPS, (
+        "this test's whole point is proving the THREAD cap stopped it while the "
+        "per-run cap never got the chance to -- if loop_count reached its own "
+        "cap here, this test no longer isolates what it claims to"
+    )
+    assert not graph.get_state(cap_config).next, (
+        "expected the thread to fully settle (reach gate/planner/END) once the "
+        "thread-level cap fires, not still be paused waiting on a question"
+    )
+    print("   Thread-level cap fired while the per-run cap never did -- "
+          "fell back to the best available data instead of continuing to ask.")
 
     print("\nALL THREE ROUTING PATHS DEMONSTRATED.")
