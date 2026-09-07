@@ -43,7 +43,7 @@ MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 # us-east-1 / us-east-2 / us-west-2.
 AWS_REGION = "us-east-1"
 AWS_PROFILE = "workshop"
-GEMINI_MODEL = "gemini-3.1-flash-lite"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
 def _bedrock_converse(system_prompt: str, user_text: str):
