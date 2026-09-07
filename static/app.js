@@ -6,8 +6,12 @@
     userId: document.getElementById("user-id"),
     btnRun: document.getElementById("btn-run"),
     btnReset: document.getElementById("btn-reset"),
+    scenarioSelect: document.getElementById("scenario-select"),
+    llmBadge: document.getElementById("llm-badge"),
     rawText: document.getElementById("raw-text"),
-    btnSubmitEarnings: document.getElementById("btn-submit-earnings"),
+    btnSendRawText: document.getElementById("btn-send-raw-text"),
+    chatLog: document.getElementById("chat-log"),
+    chatEmpty: document.getElementById("chat-empty"),
     status: document.getElementById("status-line"),
 
     conclusionText: document.getElementById("conclusion-text"),
@@ -66,6 +70,50 @@
     const lower = (nodeName || "").toLowerCase();
     const match = NODE_INFO.find(([key]) => lower.includes(key));
     return match ? { label: match[1], description: match[2] } : null;
+  }
+
+  const SOURCE_LABELS = {
+    partner_statement: "platform payout statement",
+    self_reported_shift_log: "self-reported shift log",
+    benchmark_prior: "industry benchmark (no personal data yet)",
+    screenshot_ocr: "transcribed message/screenshot",
+  };
+
+  const TIER_LABELS = { 0: "Autonomous — acts and logs it", 1: "Notify — informs you, no action", 2: "Approval — halts and asks you first" };
+
+  const REASON_LABELS = {
+    not_applicable: "doesn't apply to this situation",
+    insufficient_history: "not enough earnings history yet",
+  };
+
+  function prettyToken(s) {
+    return (REASON_LABELS[s]) || s.replace(/_/g, " ");
+  }
+
+  // Judge-facing simplification of the raw "checked" strings each module
+  // writes for its own trace record -- purely a display transform, so the
+  // backend trace content (and any module self-test asserting on it
+  // verbatim) is untouched. Falls through to the raw string unchanged if
+  // nothing matches, so an unrecognised format never disappears.
+  const CHECKED_HUMANIZERS = [
+    [/^source: (.+)$/, (m) => `Data source: ${SOURCE_LABELS[m[1]] || m[1].replace(/_/g, " ")}`],
+    [/^(\d+)d earnings history$/, (m) => `${m[1]} day${m[1] === "1" ? "" : "s"} of earnings history`],
+    [/^permission tier: rule '([^']+)' -> tier (\d)$/, (m) => `Permission tier: ${TIER_LABELS[m[2]] || `tier ${m[2]}`}`],
+    [/^materiality score \([^)]+\): (\d+)\/100, fire=(True|False)$/, (m) =>
+      `Materiality score: ${m[1]}/100 — ${m[2] === "True" ? "urgent enough to speak up" : "not urgent enough to speak up"}`],
+    [/^staleness score \([^)]+\): (\d+)\/100, fire=(True|False)$/, (m) =>
+      `Staleness score: ${m[1]}/100 — ${m[2] === "True" ? "stale enough to check in" : "not stale enough to check in"}`],
+    [/^(.+): rejected \(user_constraint: violates '(.+)'\)$/, (m) => `"${m[1]}" — rejected, conflicts with your rule "${m[2]}"`],
+    [/^(.+): rejected \(user_constraint\)$/, (m) => `"${m[1]}" — rejected (conflicts with a stored constraint)`],
+    [/^(.+): rejected \((.+)\)$/, (m) => `"${m[1]}" — rejected (${prettyToken(m[2])})`],
+  ];
+
+  function humanizeChecked(item) {
+    for (const [pattern, fn] of CHECKED_HUMANIZERS) {
+      const m = item.match(pattern);
+      if (m) return fn(m);
+    }
+    return item;
   }
 
   // --- Helpers -----------------------------------------------------------
@@ -136,6 +184,45 @@
       approval: "paused for approval",
       question: "paused for answer",
     }[state] || "idle";
+  }
+
+  // The chat log exists purely so the user can see, in plain language,
+  // what happened right after they hit Send -- it is a visual record of
+  // "here's what you typed, here's what the agent concluded," not a
+  // general-purpose free-form conversation. Every assistant bubble is built
+  // from a deterministic template (server-side ack text, or a summary of
+  // already-computed state_summary fields) -- never raw LLM prose -- so it
+  // can't drift from what the trace panel and conclusion card show.
+  function appendChatBubble(role, text) {
+    els.chatEmpty.hidden = true;
+    els.chatLog.insertAdjacentHTML(
+      "beforeend",
+      `<p class="chat-bubble ${role}">${escapeHtml(text)}</p>`
+    );
+    els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  }
+
+  // Deterministic one-line summary of what the run concluded, for the chat
+  // log's assistant bubble -- built from the same state_summary fields
+  // renderConversation() already renders into the cards, so it can never
+  // say something the rest of the UI disagrees with.
+  function summarizeOutcome(data) {
+    const s = data.state_summary || {};
+    if (data.open_questions && data.open_questions.length) {
+      return `I need more info: ${data.open_questions[0]}`;
+    }
+    if (s.chosen_plan) {
+      return `Proposed a plan: ${s.chosen_plan.name || s.chosen_plan.id} `
+        + (data.awaiting_approval ? "(needs your approval above)." : ".");
+    }
+    if (s.materiality_flag && s.materiality_flag.fire === false) {
+      return "Updated the forecast — no material shortfall, so I'm staying silent.";
+    }
+    if (s.forecast) {
+      return `Updated the forecast: shortfall of ${fmtCents(s.forecast.shortfall_amount_cents)} `
+        + `on ${s.forecast.shortfall_date || "an unknown date"} (${s.forecast.confidence || "UNKNOWN"} confidence).`;
+    }
+    return "Run complete.";
   }
 
   // --- Rendering -----------------------------------------------------------
@@ -240,7 +327,7 @@
     const info = friendlyNodeInfo(rawNode);
     const checkedItems = (record.checked || []).map((item, i) => {
       const grey = FOUND_NOTHING_PATTERN.test(item) ? " found-nothing" : "";
-      return `<li class="${grey}" style="animation-delay:${i * 45}ms"><span class="mark">${grey ? "–" : "✓"}</span><span class="label">${escapeHtml(item)}</span></li>`;
+      return `<li class="${grey}" style="animation-delay:${i * 45}ms"><span class="mark">${grey ? "–" : "✓"}</span><span class="label">${escapeHtml(humanizeChecked(item))}</span></li>`;
     }).join("");
 
     const headerHtml = info
@@ -328,7 +415,14 @@
       setLive("running");
       const params = new URLSearchParams({ user_id: currentUserId() });
       if (rawText) params.set("raw_text", rawText);
+      const scenario = els.scenarioSelect.value;
+      if (scenario) params.set("scenario", scenario);
       const es = new EventSource(`/run/${encodeURIComponent(currentThreadId())}/stream?${params}`);
+
+      es.addEventListener("chat", (e) => {
+        const msg = JSON.parse(e.data);
+        appendChatBubble("assistant", msg.text);
+      });
 
       es.addEventListener("trace", (e) => {
         const record = JSON.parse(e.data);
@@ -343,6 +437,7 @@
         if (!data.ok) {
           setStatus(`Error: ${data.error}`, true);
           setLive("idle");
+          appendChatBubble("assistant", `Something went wrong: ${data.error}`);
         } else {
           renderConversation(data);
           // data.trace is the thread's FULL history (every run ever done
@@ -353,6 +448,7 @@
           // of this run. Without this, the panel only ever shows the most
           // recent run's steps even though nothing was actually lost.
           renderFullTrace(data.trace);
+          if (rawText) appendChatBubble("assistant", summarizeOutcome(data));
           setStatus(`${label} — done.`);
         }
         resolve();
@@ -370,6 +466,10 @@
 
   els.btnRun.addEventListener("click", () => {
     const rawText = els.rawText.value.trim();
+    if (rawText) {
+      appendChatBubble("user", rawText);
+      els.rawText.value = "";
+    }
     runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", rawText);
   });
 
@@ -397,6 +497,17 @@
     }
   });
 
+  // The earnings-message box previously had no button of its own -- it only
+  // ever did anything if the user separately clicked "Run agent" up top,
+  // with no visual link between the two. This makes it self-sufficient.
+  els.btnSendRawText.addEventListener("click", async () => {
+    const rawText = els.rawText.value.trim();
+    if (!rawText) return;
+    appendChatBubble("user", rawText);
+    els.rawText.value = "";
+    await runAgent(els.btnSendRawText, "Transcribing and running agent", rawText);
+  });
+
   els.btnReset.addEventListener("click", async () => {
     await withLoading(els.btnReset, "Resetting demo", async () => {
       try {
@@ -405,6 +516,8 @@
           renderConversation({ state_summary: {}, open_questions: [], awaiting_approval: false });
           beginLiveTrace();
           els.rawText.value = "";
+          els.chatLog.querySelectorAll(".chat-bubble").forEach((el) => el.remove());
+          els.chatEmpty.hidden = false;
           setLive("idle");
           setStatus("Demo reset.");
         } else {
@@ -453,6 +566,8 @@
   els.btnSubmitAnswer.addEventListener("click", async () => {
     const text = els.answerText.value.trim();
     if (!text) return;
+    appendChatBubble("user", text);
+    els.answerText.value = "";
     await withLoading(els.btnSubmitAnswer, "Sending answer", async () => {
       try {
         const data = await postJSON("/answer", {
@@ -460,18 +575,59 @@
           answers: { response: text },
         });
         if (data.ok) {
-          els.answerText.value = "";
           renderConversation(data);
           renderFullTrace(data.trace);
+          appendChatBubble("assistant", summarizeOutcome(data));
           setStatus("Answer sent.");
         } else {
           setStatus(`Error: ${data.error}`, true);
+          appendChatBubble("assistant", `Something went wrong: ${data.error}`);
         }
       } catch (err) {
         setStatus(`Network error: ${err.message || err}`, true);
       }
     });
   });
+
+  // Populate the scenario selector from the backend rather than hardcoding
+  // labels here, so data/demo_scenarios.py stays the single source of truth.
+  (async () => {
+    try {
+      const res = await fetch("/scenarios");
+      const data = await res.json();
+      if (data.ok) {
+        for (const s of data.scenarios) {
+          const opt = document.createElement("option");
+          opt.value = s.id;
+          opt.textContent = s.label;
+          opt.title = s.description;
+          els.scenarioSelect.appendChild(opt);
+        }
+      }
+    } catch (err) {
+      // A missing scenario list must not block the rest of the UI.
+    }
+  })();
+
+  // Surface whether the configured LLM provider is actually reachable up
+  // front -- without this, a missing GEMINI_API_KEY / LLM_PROVIDER=none
+  // degrades silently: the clarify loop asks its question, fails to
+  // transcribe the answer, and exhausts MAX_REPLAN_LOOPS with no visible
+  // signal that the LLM was never in the loop at all.
+  (async () => {
+    try {
+      const res = await fetch("/health");
+      const data = await res.json();
+      const ready = !!data.llm_ready;
+      els.llmBadge.textContent = ready
+        ? `LLM ready (${data.llm_provider})`
+        : `LLM unavailable (${data.llm_provider || "none"}) — transcription will fail`;
+      els.llmBadge.classList.toggle("ready", ready);
+      els.llmBadge.classList.toggle("not-ready", !ready);
+    } catch (err) {
+      els.llmBadge.textContent = "LLM status unknown";
+    }
+  })();
 
   setStatus("Ready.");
 })();

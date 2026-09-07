@@ -37,6 +37,13 @@ class CashFlowState(TypedDict, total=False):
     raw_bank_rows: List[dict]      # rows for parse_bank_statement()
     expenses: List[dict]           # outgoings for add_expenses()
 
+    # FLAGGED EXTENSION (not in the original frozen contract, added the same
+    # way raw_text etc. were): Bob-stated recurring bills, e.g.
+    # {"name": "Netflix", "day_of_month": 28, "amount_cents": 1798}.
+    # Accumulated across sessions (checkpointer), read by forecast.py to add
+    # to its bill calendar alongside the synthetic DEMO_BILLS.
+    recurring_bills: List[dict]
+
     delivery_log: List[dict]     # Member 3 (ingestion.py)
     ingest_health: dict          # Member 3 (ingestion.py)
 

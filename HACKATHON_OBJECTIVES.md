@@ -114,24 +114,33 @@ code (see the "Done when" evidence under each item), not by prior claims.
 
 ## §13 Status Summary
 
-**Update 2026-09-05 (later):** `modules/forecast.py` (Member 2) now exists,
-is real, and is **swapped into `graph.py`** (`from modules.forecast import
-forecast_node`, replacing the stub import) — verified end-to-end via
-`python graph.py` and the full `/run → /approve reject → /run` HTTP
-sequence, both re-run against the live swap. `data/` is still empty;
-`modules/ingestion.py`, `modules/materiality.py`, `modules/planner.py`
-still don't exist.
+**Update 2026-09-07 (current, corrected — this table had drifted stale,
+still claiming ingestion/materiality/planner "don't exist" after all three
+had long since landed and been swapped in):** All 4 worker nodes are real
+and swapped into `graph.py` (see `docs/SWAP_STATUS.md`). The recurring-bill
+chat feature (schema field, forecast merge, server-side intent
+classification, chat-log UI) is implemented and committed on `main`. The
+materiality staleness false-positive bug (fired an urgent alert on a
+brand-new, zero-history thread) is fixed and regression-tested. SSE
+streaming (`GET /run/{id}/stream`) replaced polling. `data/benchmarks.json`
+still has placeholder (all-zero, uncited) rates — the one real remaining
+gap.
 
 | Area | Status | Notes |
 |---|---|---|
-| Shared contract (`shared/*`) | ✅ Done | Frozen, tested. |
-| Orchestration skeleton (`graph.py`, `stubs.py`) | ✅ Done | Runs end-to-end on stubs, all 3 routing paths verified. |
-| Persistence | ✅ Done | Verified across HTTP calls, not just in-process. |
-| API surface (`server.py`) | ✅ Done | All 6 endpoints verified, never returns a 500. |
-| Trace panel (`static/index.html`) | ⚠️ Built, not browser-verified | CSS spec compliance confirmed via grep only. |
-| `modules/forecast.py` (Member 2) | ✅ Done | All 5 steps verified — see §7.2. `ALL FORECAST TESTS PASSED`. Swapped into `graph.py` and verified end-to-end (see docs/SWAP_STATUS.md). |
-| `modules/ingestion.py`, `data/benchmarks.json` (Member 3) | ❌ Not started | |
-| `modules/materiality.py`, `modules/planner.py` (Member 4) | ❌ Not started | |
-| Module swap-in | ⚠️ 1 of 4 nodes swapped into `graph.py` | `forecast` is real and live in `graph.py`. Need 1 more (ingestion/gate/planner) to clear the handbook's "2+" bar — see docs/SWAP_STATUS.md. |
-| AWS Bedrock / SSO credentials | ❓ Unverified | `/health` reports `bedrock: false` in this environment — nobody has confirmed whether `aws sso login --profile workshop` has been run by any teammate. |
-| Flagship "3 properties in 15 seconds" demo (§4) | ✅ Fully provable on stubs | Verified 2026-09-05: reject → different plan proposed, with a trace record naming the excluded plan and constraint. Real `planner.py` still needs the same check (documented in docs/SWAP_STATUS.md). |
+| Shared contract (`shared/*`) | ✅ Done | Frozen, tested. Extended twice (flagged both times): `raw_text`/`raw_delivery_rows`/`raw_source`/`raw_bank_rows`/`expenses`, then `recurring_bills: List[dict]`. |
+| Orchestration skeleton (`graph.py`) | ✅ Done | All 4 real nodes wired; `clarify` and `execute_node` are genuine `interrupt_before` human-in-the-loop pauses. All 3 routing paths verified via `python graph.py` (both `LLM_PROVIDER=none` and `gemini`). |
+| Persistence | ✅ Done | Verified across HTTP calls and across the clarify-resume flow specifically (loop_count/state carry forward on `/answer`, not reset). |
+| API surface (`server.py`) | ✅ Done | `/run`, `/run/{id}/stream` (SSE), `/approve`, `/answer`, `/trace/{id}`, `/health`, `/demo/reset` — all verified, never returns a 500. |
+| Trace panel + chat log (`static/`) | ✅ Done, browser-verified | Redesigned UI (warm-paper/IBM Plex design import), SSE-driven live trace with scroll bounds, plain-English node labels, humanized "checked" strings, and a chat-log UI for the earnings/bill message box (user messages + deterministic acknowledgements). |
+| `modules/ingestion.py` (Member 3) | ✅ Done, swapped in | `ALL INGESTION TESTS PASSED`. Real `ingestion_node` live in `graph.py`. |
+| `modules/forecast.py` (Member 2) | ✅ Done, swapped in | `ALL FORECAST TESTS PASSED`. Now also merges Bob-stated `recurring_bills` into its bill calendar alongside the synthetic `DEMO_BILLS` fallback. |
+| `modules/materiality.py` (Member 4) | ✅ Done, swapped in | `ALL DECISION LAYER TESTS PASSED`. Staleness false-positive bug (see below) fixed with regression coverage. |
+| `modules/planner.py` (Member 4) | ✅ Done, swapped in | `ALL DECISION LAYER TESTS PASSED`. |
+| Module swap-in | ✅ 4 of 4 nodes swapped into `graph.py` | Handbook's "2+" bar cleared and exceeded — see `docs/SWAP_STATUS.md`. |
+| `data/benchmarks.json` | ⚠️ Placeholder | All-zero rates, uncited — still needs real sourced figures before the cold-start prior is anything but inert. |
+| AWS Bedrock / SSO credentials | ❓ Unverified | `/health` reports `bedrock: false` in this environment. Gemini (`LLM_PROVIDER=gemini`) is the working local/demo path; Bedrock remains the submission target, untested here. |
+| Flagship "3 properties in 15 seconds" demo (§4) | ✅ Fully provable on real modules | Reject → different plan proposed, with a trace record naming the excluded plan and constraint — verified against the real `planner.py`/`materiality.py`, not stubs. |
+| Materiality staleness bug | ✅ Fixed (2026-09-07, twice) | Two rounds. First: `score_staleness()`'s `days_since >= STALE_URGENT_DAYS` branch set `score = 90` unconditionally instead of gating on `nearest_bill`; and `gate_node` fed ingestion's "never observed" 9999 sentinel into staleness scoring as if it were 9999 real days of silence on a cold-start (empty/benchmark-only) thread. Second, narrower gap found by re-testing against the live pipeline rather than trusting the first fix's own unit tests: the cold-start check was keyed off `sources_seen` (`== ["benchmark_prior"]`), which misses the case where `raw_delivery_rows` are supplied but every row is rejected (bad dates) — `sources_seen` then becomes a mixed list like `["partner_statement", "benchmark_prior"]` that doesn't match the heuristic, letting the raw 9999 leak into the trace with a fabricated "Phone bill is due in 3 days" urgency. Fixed by keying cold-start detection off `ingest_health["date_range"] == [None, None]` instead — the actually-reliable signal for "no dated data exists," independent of what source labels are present. Regression tests cover: never-observed + no bill (silent), never-observed + bill due (fires), and the mixed-sources_seen case specifically, plus an assertion that no rendered trace string ever contains the raw sentinel value. |
+| Demo scenario fixtures (`data/demo_scenarios.py`) | ✅ Added 2026-09-07 | The UI previously had no way to seed real earnings history — only free-text (`raw_text`) reached the graph, so a cold-start run only ever produced a trivial Tier 0 fallback plan with nothing to approve or reject. Added 3 named fixtures (`steady_earner`, `shortfall_approval`, `thin_history`) selectable via a new `<select>` in the UI, passed through `GET /run/{id}/stream?scenario=...` and a new `GET /scenarios` listing endpoint. `shortfall_approval` pre-seeds `user_constraints` excluding every reversible play (same trick `graph.py`'s own `__main__` demo (c) already used) to reliably force the one irreversible play (`defer_phone_bill`) into a genuine `TIER_APPROVAL` halt, rather than hand-tuning scoring constants. All three verified end-to-end over real HTTP against the live server (not just module self-tests): `steady_earner` reaches `materiality_gate` with `fire: False`; `shortfall_approval` reaches `awaiting_approval: True` with `chosen_plan.name: "Defer the phone bill by 3 days"`; `thin_history` reaches `awaiting_clarify: True`. |
+| LLM readiness signal | ✅ Added 2026-09-07 | `extract_from_text()`/`classify_message()` degrade silently to "couldn't extract a figure" when no LLM provider is configured — a demo running with `LLM_PROVIDER=none` or a missing `GEMINI_API_KEY` would exhaust the clarify loop with no visible explanation why. `GET /health` now also reports `llm_provider` and `llm_ready`; the UI shows a small badge reading this so a dead LLM path is caught before recording, not mid-demo. README's Setup section documents the exact env vars needed. |

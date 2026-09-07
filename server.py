@@ -20,7 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from shared.schema import AWS_PROFILE, AWS_REGION
+from shared.money import cents_from_string
+from shared.llm import converse
 import graph as agent_graph
+from data import demo_scenarios
 
 app = FastAPI(title="Agentic Cash-Flow Copilot for Bob")
 
@@ -71,6 +74,7 @@ def _state_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         "rejected_plans": state.get("rejected_plans"),
         "explanation": state.get("explanation"),
         "user_constraints": state.get("user_constraints", []),
+        "recurring_bills": state.get("recurring_bills", []),
         "loop_count": state.get("loop_count", 0),
     }
 
@@ -125,8 +129,68 @@ def _sse(event: str, data: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+# --- Chat-box intent classification -------------------------------------------
+# The free-text box on the front end can now describe either an earnings
+# update or a recurring bill to plan around. Same pattern as
+# modules/ingestion.py's extract_from_text: the LLM only classifies +
+# transcribes fields, Python decides what happens with them and builds every
+# user-facing acknowledgement from a deterministic template -- never from
+# the model's own words -- so a hallucinated intent can misfire at worst as
+# "I didn't understand that", never as a wrong number silently stored.
+CLASSIFY_SYSTEM_PROMPT = (
+    "Classify this message into exactly one intent: EARNINGS (reporting "
+    "income, a shift, or a payout), BILL (describing a recurring bill or "
+    "expense to plan around), or OTHER (anything else, including nonsense "
+    "or unrelated text). If BILL, also transcribe -- do not estimate or "
+    "guess -- name (short label), day_of_month (integer 1-31 it's due "
+    "each month, null if not stated), amount (the dollar amount exactly "
+    "as written, e.g. \"17.98\", null if not stated). "
+    "Return ONLY JSON: {\"intent\": \"EARNINGS\"|\"BILL\"|\"OTHER\", "
+    "\"name\": ..., \"day_of_month\": ..., \"amount\": ...}. "
+    "No prose, no markdown code fences."
+)
+
+
+def classify_message(text: str) -> Dict[str, Any]:
+    """Returns {"intent": ...} at minimum. Falls back to EARNINGS (the
+    pre-chat-feature behaviour) whenever the LLM is unavailable or returns
+    something unparseable, so a thread never silently drops a message it
+    can no longer classify.
+    """
+    content = converse(CLASSIFY_SYSTEM_PROMPT, text)
+    if content is None:
+        return {"intent": "EARNINGS"}
+    try:
+        if content.startswith("```"):
+            content = content.strip("`").replace("json\n", "", 1)
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, AttributeError):
+        return {"intent": "EARNINGS"}
+    if not isinstance(parsed, dict) or parsed.get("intent") not in ("EARNINGS", "BILL", "OTHER"):
+        return {"intent": "EARNINGS"}
+    return parsed
+
+
+def _bill_from_classification(classification: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Builds the {name, day_of_month, amount_cents} shape forecast.py
+    expects, or None if the day-of-month or amount is missing/unparseable --
+    a bill Python can't act on numerically is never stored half-formed.
+    """
+    day_of_month = classification.get("day_of_month")
+    amount = classification.get("amount")
+    if not isinstance(day_of_month, int) or not (1 <= day_of_month <= 31):
+        return None
+    try:
+        amount_cents = cents_from_string(amount)
+    except (ValueError, TypeError):
+        return None
+    name = classification.get("name") or "Recurring bill"
+    return {"name": str(name)[:60], "day_of_month": day_of_month, "amount_cents": amount_cents}
+
+
 @app.get("/run/{run_id}/stream")
-def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = None) -> StreamingResponse:
+def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = None,
+                scenario: Optional[str] = None) -> StreamingResponse:
     """SSE version of /run: one 'trace' event per node as the graph
     actually executes it, then a final 'done' event in the same shape
     /run returns (so the front end's existing renderConversation() works
@@ -135,12 +199,49 @@ def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = 
     GET, not POST -- EventSource can only issue GET with no body, so
     run_id doubles as the thread_id and any raw input rides in the query
     string instead of a JSON payload.
+
+    scenario, if given, looks up a named fixture in data/demo_scenarios.py
+    and merges its `inputs` in -- this is how the demo/video UI seeds real
+    earnings history through a GET request, since raw_delivery_rows has no
+    other way to reach this endpoint's query string.
     """
     def event_stream():
         config = {"configurable": {"thread_id": run_id}}
         inputs: Dict[str, Any] = {"user_id": user_id, "loop_count": 0}
+        if scenario:
+            fixture = demo_scenarios.SCENARIOS.get(scenario)
+            if fixture:
+                inputs.update(fixture["inputs"])
+        chat_ack = None
         if raw_text:
-            inputs["raw_text"] = raw_text
+            classification = classify_message(raw_text)
+            intent = classification.get("intent")
+            if intent == "BILL":
+                bill = _bill_from_classification(classification)
+                if bill:
+                    snapshot = agent_graph.graph.get_state(config)
+                    existing = list(snapshot.values.get("recurring_bills") or [])
+                    existing.append(bill)
+                    agent_graph.graph.update_state(config, {"recurring_bills": existing})
+                    chat_ack = (
+                        f"Got it — added \"{bill['name']}\" (${bill['amount_cents'] / 100:,.2f}, "
+                        f"due day {bill['day_of_month']} of the month). Future forecasts will "
+                        f"factor it in."
+                    )
+                else:
+                    chat_ack = (
+                        "That sounded like a recurring bill, but I couldn't pick out a clear "
+                        "amount and due day — try something like \"$17.98 due on the 28th\"."
+                    )
+            elif intent == "OTHER":
+                chat_ack = (
+                    "I can only act on an earnings update or a recurring bill right now — "
+                    "try rephrasing as one of those."
+                )
+            else:
+                inputs["raw_text"] = raw_text
+        if chat_ack:
+            yield _sse("chat", {"role": "assistant", "text": chat_ack})
         try:
             for update in agent_graph.graph.stream(inputs, config=config, stream_mode="updates"):
                 for node_update in update.values():
@@ -194,9 +295,9 @@ def answer(req: AnswerRequest) -> Dict[str, Any]:
         trace_record = {
             "node": "answer_endpoint",
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "checked": list(req.answers.keys()),
+            "checked": [f'Bob\'s answer: "{v}"' for v in req.answers.values() if v] or ["(empty answer)"],
             "found": {"answers": req.answers},
-            "concluded": f"Received Bob's answer(s) to {len(req.answers)} open question(s).",
+            "concluded": f'Received: "{combined_answer}"' if combined_answer else "Received an empty answer.",
             "confidence": "HIGH",
             "degraded": False,
         }
@@ -240,12 +341,34 @@ def get_trace(thread_id: str) -> Dict[str, Any]:
         return _error_response(exc)
 
 
+@app.get("/scenarios")
+def scenarios() -> Dict[str, Any]:
+    """Lists the named demo fixtures (data/demo_scenarios.py) so the front
+    end's scenario selector never hardcodes labels the backend could drift
+    from.
+    """
+    return {
+        "ok": True,
+        "scenarios": [
+            {"id": key, "label": s["label"], "description": s["description"]}
+            for key, s in demo_scenarios.SCENARIOS.items()
+        ],
+    }
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     """Reports whether AWS Bedrock credentials resolve, WITHOUT crashing if
     they do not -- every module in this project must run to completion
     with zero AWS credentials present (Rules Sheet #7), and this endpoint
     is the one place that actually checks whether they happen to be there.
+
+    Also reports which shared/llm.py provider is actually selected
+    (LLM_PROVIDER env var) and whether ITS credential is present -- a demo
+    running with LLM_PROVIDER=none or a missing GEMINI_API_KEY degrades
+    silently (extract_from_text returns [], the clarify loop just runs out
+    its answers without ever landing) with no visible signal on stage.
+    This is what the front end's readiness badge reads.
     """
     bedrock_ok = False
     try:
@@ -255,7 +378,22 @@ def health() -> Dict[str, Any]:
         bedrock_ok = creds is not None and creds.get_frozen_credentials().access_key is not None
     except Exception:  # noqa: BLE001 -- absence of credentials must never crash /health
         bedrock_ok = False
-    return {"ok": True, "bedrock": bedrock_ok}
+
+    import os
+    provider = os.getenv("LLM_PROVIDER", "none").lower()
+    if provider == "bedrock":
+        llm_ready = bedrock_ok
+    elif provider == "gemini":
+        llm_ready = bool(os.getenv("GEMINI_API_KEY"))
+    else:
+        llm_ready = False
+
+    return {
+        "ok": True,
+        "bedrock": bedrock_ok,
+        "llm_provider": provider,
+        "llm_ready": llm_ready,
+    }
 
 
 @app.post("/demo/reset")

@@ -70,11 +70,14 @@
       <button class="btn btn-dark" id="btn-submit-answer" type="button">Submit answer</button>
     </div>
 
-    <div class="card llm-card">
-      <span class="eyebrow">Earnings message <span class="eyebrow-hint">optional — transcribed by the LLM</span></span>
-      <p class="field-explainer">Paste any free-text income update — a text message, app notification, or screenshot transcript. The agent transcribes it into a structured record; it never calculates or estimates from it. Must include an actual date (e.g. 2026-09-05) — it won't guess "yesterday" or a weekday.</p>
-      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot;"></textarea>
-      <button class="btn btn-dark" id="btn-submit-earnings" type="button">Log earnings &amp; run agent</button>
+    <div class="card chat-card">
+      <span class="eyebrow">Tell the agent something <span class="eyebrow-hint">optional — transcribed by the LLM, decided by Python</span></span>
+      <p class="field-explainer">Report earnings (a shift, a payout screenshot) or state a recurring bill to plan around. The agent classifies and transcribes only — every number and decision below is deterministic. Earnings must include an actual date (e.g. 2026-09-05) — it won't guess "yesterday" or a weekday.</p>
+      <div class="chat-log" id="chat-log">
+        <p class="chat-empty" id="chat-empty">Nothing sent yet — try the example below.</p>
+      </div>
+      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot; or &quot;I have a $17.98 Netflix bill due on the 28th every month.&quot;"></textarea>
+      <button class="btn btn-outline" id="btn-send-raw-text" type="button">Send</button>
     </div>
 
     <div class="endpoints-footer">
@@ -86,8 +89,12 @@
   <section class="right-col">
     <div class="sticky-controls">
       <div class="control-row">
+        <select id="scenario-select" class="scenario-select" title="Seed this run with a named earnings-history fixture">
+          <option value="">No scenario (current thread's own data)</option>
+        </select>
         <button class="btn btn-dark" id="btn-run" type="button">Run agent</button>
         <span class="spacer"></span>
+        <span class="llm-badge" id="llm-badge" title="Whether the configured LLM provider is actually reachable">checking LLM…</span>
         <span class="live-indicator"><span class="live-dot" id="live-dot"></span><span id="live-text">idle</span></span>
         <button class="btn btn-ghost" id="btn-reset" type="button">Reset demo</button>
       </div>
