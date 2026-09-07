@@ -211,6 +211,15 @@ def run_stream(run_id: str, user_id: str = "bob-001", raw_text: Optional[str] = 
         if scenario:
             fixture = demo_scenarios.SCENARIOS.get(scenario)
             if fixture:
+                # A named scenario is a clean, self-contained fixture -- clear
+                # any prior state on this thread first, or its delivery_log
+                # (which genuinely accumulates run-to-run for real usage --
+                # see modules/ingestion.py) silently blends with the new
+                # fixture's rows and can erase the shortfall the scenario was
+                # built to demonstrate (e.g. running steady_earner then
+                # shortfall_approval on the same thread averages both
+                # fixtures' earnings together).
+                agent_graph._checkpointer.delete_thread(run_id)
                 inputs.update(fixture["inputs"])
         chat_ack = None
         if raw_text:

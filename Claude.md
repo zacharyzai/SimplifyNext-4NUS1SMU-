@@ -18,7 +18,7 @@ authoritative "what are we building and is it done" answer, see
 - [x] `modules/ingestion.py` — ingestion & grounding, provenance-weighted. Tests pass; swapped into `graph.py`.
 - [x] `modules/materiality.py` — materiality scoring + permission tiering. Tests pass; swapped into `graph.py`.
 - [x] `modules/planner.py` — play library + plan selection. Tests pass; swapped into `graph.py`.
-- [x] `data/benchmarks.json` — cited cold-start earnings prior exists, but is still a placeholder (all-zero rates, uncited) — see docs/SWAP_STATUS.md.
+- [x] `data/benchmarks.json` — cited cold-start earnings prior with real SGD rates (900-1100 cents/hr) and citations; Lalamove's rate is flagged as a same-ballpark placeholder pending a courier-specific source — see docs/SWAP_STATUS.md.
 - [x] `shared/llm.py` — single LLM call surface (`LLM_PROVIDER=bedrock|gemini|none`); `.env` auto-loaded.
 
 **All 4 worker nodes are real and swapped into `graph.py` as of 2026-09-06** (see docs/SWAP_STATUS.md for the bugs each swap surfaced — several were only catchable by actually running `python graph.py` end-to-end with `langgraph` installed, not by each module's own standalone self-test).

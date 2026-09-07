@@ -37,7 +37,8 @@ shared/             Owned by Member 1. The frozen contract everyone codes agains
   money.py            Integer-cents money handling — no floats anywhere in this project.
   resilience.py       resilient_call() / merge_tool_health() — retry + fallback, never raises.
 
-modules/             One file per worker module, one owner each.
+modules/             One file per worker module, one owner each. All four are real and
+                     swapped into graph.py — see docs/SWAP_STATUS.md for swap history.
   forecast.py           Member 2 — deterministic forecast engine (zero LLM calls).
   ingestion.py           Member 3 — ingestion & grounding, provenance-weighted.
   materiality.py         Member 4 — materiality scoring + permission tiering.
@@ -45,11 +46,12 @@ modules/             One file per worker module, one owner each.
 
 data/
   benchmarks.json      Member 3 — cited cold-start earnings prior. Never model-generated.
+  demo_scenarios.py    Named fixtures (steady_earner / shortfall_approval / thin_history)
+                       the front end's scenario dropdown seeds a run with.
 
 graph.py             Member 1 — LangGraph orchestration, routing, checkpointing.
-stubs.py             Member 1 — stub node implementations, swapped for real modules.
 server.py            Member 1 — FastAPI backend exposing the graph to the front end.
-static/index.html    Member 1 — trace panel + demo UI. Plain HTML/CSS/JS, no build step.
+static/              Member 1 — trace panel + demo UI. Plain HTML/CSS/JS, no build step.
 ```
 
 Ownership rule: **nobody edits `shared/schema.py` except Member 1.** Everyone
@@ -59,11 +61,15 @@ status dict.
 
 ## Setup
 
-Requires Python 3.11+.
+Requires Python 3.11+. The system/Homebrew Python on some machines refuses
+`pip install` (externally-managed), so use a project `.venv`:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
+
+Use `.venv/bin/python3` / `.venv/bin/uvicorn` for everything below — not the
+system `python3`.
 
 For local development without AWS, `LLM_PROVIDER=gemini` (see
 `shared/llm.py`) needs a `GEMINI_API_KEY` in a `.env` file at the repo
@@ -124,33 +130,44 @@ Each module runs standalone and prints its own test output — this is how you
 verify a module in isolation before it's wired into the graph:
 
 ```bash
-python shared/money.py          # ALL MONEY TESTS PASSED
-python shared/resilience.py     # ALL RESILIENCE TESTS PASSED
-python modules/forecast.py      # ALL FORECAST TESTS PASSED
-python modules/ingestion.py     # ALL INGESTION TESTS PASSED
-python modules/materiality.py   # (materiality + planner) ALL DECISION LAYER TESTS PASSED
+.venv/bin/python3 shared/money.py          # ALL MONEY TESTS PASSED
+.venv/bin/python3 shared/resilience.py     # ALL RESILIENCE TESTS PASSED
+.venv/bin/python3 modules/forecast.py      # ALL FORECAST TESTS PASSED
+.venv/bin/python3 modules/ingestion.py     # ALL INGESTION TESTS PASSED
+.venv/bin/python3 modules/materiality.py   # ALL DECISION LAYER TESTS PASSED (materiality.py)
+.venv/bin/python3 modules/planner.py       # ALL DECISION LAYER TESTS PASSED (planner.py)
 ```
 
-Once the graph exists:
+Run the full graph (all 4 real modules, three routing paths end to end):
 
 ```bash
-python graph.py                 # runs the two-run persistence demo on thread "bob-001"
-uvicorn server:app --reload     # serves the API + static/index.html at http://localhost:8000
+.venv/bin/python3 graph.py                 # ALL THREE ROUTING PATHS DEMONSTRATED
 ```
 
-Then open `http://localhost:8000` and use **Run agent** / **Simulate next
-Wednesday** / **Reset demo** to drive the trace-panel demo.
+Serve the API + trace-panel UI:
+
+```bash
+.venv/bin/uvicorn server:app --reload      # http://localhost:8000
+```
+
+Then open `http://localhost:8000` and use the scenario dropdown (seeds a
+named fixture — `steady_earner`, `shortfall_approval`, or `thin_history`,
+listed by `GET /scenarios`) + **Run agent**, or type your own earnings/bill
+message into the chat box. **Reset demo** clears the current thread's
+checkpointed state so you can start over live without restarting the server.
 
 ## Current status
 
-Build not yet complete — see `HACKATHON_OBJECTIVES.md` §13 (Status Summary)
-for the live checkpoint tracker. As of now:
+All four worker modules are real, tested, and swapped into `graph.py` — see
+`docs/SWAP_STATUS.md` for the swap history and the bugs each swap surfaced.
+`CLAUDE.md` is the fast-load running-context snapshot; `HACKATHON_OBJECTIVES.md`
+is the source of truth for scope and checkpoint status.
 
 - [x] `shared/schema.py`, `shared/money.py`, `shared/resilience.py` — written, frozen, tests pass.
-- [x] `graph.py` / `stubs.py` — graph skeleton on stubs + persistence.
-- [x] `server.py`, `static/index.html`.
-- [x] `modules/forecast.py` — deterministic forecast engine, `ALL FORECAST TESTS PASSED`. Not yet swapped into `graph.py` (see `docs/SWAP_STATUS.md`).
-- [ ] `modules/ingestion.py`, `modules/materiality.py`, `modules/planner.py`, `data/benchmarks.json`.
+- [x] `graph.py` — real LangGraph orchestration, routing, checkpointing (no stub nodes remain).
+- [x] `server.py`, `static/` — FastAPI backend + trace-panel UI, including scenario dropdown and Tier-2 approval flow.
+- [x] `modules/forecast.py`, `modules/ingestion.py`, `modules/materiality.py`, `modules/planner.py` — all real, all swapped into `graph.py`, all self-tests pass.
+- [x] `data/benchmarks.json` — cited cold-start earnings prior with real SGD rates and citations.
 
 ## Non-negotiable rules (see `HACKATHON_OBJECTIVES.md` §4 for the full list)
 
