@@ -409,14 +409,23 @@
   // single blocking POST -- each "trace" event lands the moment that node
   // actually finishes (LLM calls and all), so the right panel builds up
   // live instead of appearing all at once after the whole run completes.
-  function runAgent(button, label, rawText) {
+  // includeScenario must be opt-in, not "whatever the dropdown currently
+  // shows" -- the scenario fixture's `inputs` (data/demo_scenarios.py)
+  // includes a fixed user_constraints list, so silently re-sending it on
+  // every later action (chat Send, Submit answer) would overwrite anything
+  // built up since -- e.g. wiping out a constraint just added by rejecting
+  // a plan, making the whole session look like it "reset" even though
+  // nothing was lost anywhere except by this re-seeding. Only an explicit,
+  // one-time "start/restart this scenario" action should ever send it.
+  function runAgent(button, label, rawText, includeScenario) {
     return withLoading(button, label, () => new Promise((resolve) => {
       beginLiveTrace();
       setLive("running");
       const params = new URLSearchParams({ user_id: currentUserId() });
       if (rawText) params.set("raw_text", rawText);
-      const scenario = els.scenarioSelect.value;
-      if (scenario) params.set("scenario", scenario);
+      if (includeScenario && els.scenarioSelect.value) {
+        params.set("scenario", els.scenarioSelect.value);
+      }
       const es = new EventSource(`/run/${encodeURIComponent(currentThreadId())}/stream?${params}`);
 
       es.addEventListener("chat", (e) => {
@@ -448,7 +457,12 @@
           // of this run. Without this, the panel only ever shows the most
           // recent run's steps even though nothing was actually lost.
           renderFullTrace(data.trace);
-          if (rawText) appendChatBubble("assistant", summarizeOutcome(data));
+          // Always acknowledge the outcome in the chat log, not just when
+          // the user typed something -- a scenario pick or a plain "Run
+          // agent" click that ends in silence (materiality never fires)
+          // deserves the same closing line as any other run, so the log
+          // never just goes quiet with no explanation of what happened.
+          appendChatBubble("assistant", summarizeOutcome(data));
           setStatus(`${label} — done.`);
         }
         resolve();
@@ -470,30 +484,16 @@
       appendChatBubble("user", rawText);
       els.rawText.value = "";
     }
-    runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", rawText);
+    runAgent(els.btnRun, rawText ? "Transcribing and running agent" : "Run agent", rawText, /* includeScenario */ true);
   });
 
-  // A dedicated button right next to the earnings-message box, so typing
-  // there and submitting doesn't require jumping to the unrelated "Run
-  // agent" button at the top of the page -- same underlying action
-  // (there's no lighter-weight "just add this record" endpoint; every
-  // raw_text submission re-runs the full graph), just discoverable from
-  // where you're actually typing.
-  els.btnSubmitEarnings.addEventListener("click", () => {
-    const rawText = els.rawText.value.trim();
-    if (!rawText) {
-      setStatus("Type an earnings message first.", true);
-      return;
-    }
-    runAgent(els.btnSubmitEarnings, "Transcribing and running agent", rawText);
-  });
   // Cmd/Ctrl+Enter submits from inside the textarea -- plain Enter still
   // inserts a newline, since a pasted screenshot transcript may be
   // multi-line.
   els.rawText.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
-      els.btnSubmitEarnings.click();
+      els.btnSendRawText.click();
     }
   });
 
@@ -529,13 +529,21 @@
     });
   });
 
+  // The approval bar lives in the right column and the chat log lives in
+  // the left one -- without a bubble here, clicking Approve/Reject just
+  // makes the approval bar vanish with nothing tying the two together, so
+  // the conversation LOOKS finished even though the thread is still fully
+  // alive and the chat box still works exactly as before. This bubble is
+  // what makes "you can keep going" visible instead of implicit.
   els.btnApprove.addEventListener("click", async () => {
+    const planName = els.approvalAction.textContent || "the proposed action";
     await withLoading(els.btnApprove, "Sending approval", async () => {
       try {
         const data = await postJSON("/approve", { thread_id: currentThreadId(), approved: true });
         if (data.ok) {
           renderConversation(data);
           renderFullTrace(data.trace);
+          appendChatBubble("assistant", `Approved — "${planName}" has been executed. You can keep going any time: report more earnings or tell me about another bill below.`);
           setStatus("Approved — action executed.");
         } else {
           setStatus(`Error: ${data.error}`, true);
@@ -547,12 +555,14 @@
   });
 
   els.btnReject.addEventListener("click", async () => {
+    const planName = els.approvalAction.textContent || "that action";
     await withLoading(els.btnReject, "Sending rejection", async () => {
       try {
         const data = await postJSON("/approve", { thread_id: currentThreadId(), approved: false });
         if (data.ok) {
           renderConversation(data);
           renderFullTrace(data.trace);
+          appendChatBubble("assistant", `Rejected — I'll remember not to suggest "${planName}" again. You can keep going any time: report more earnings or tell me about another bill below.`);
           setStatus("Rejected — constraint recorded.");
         } else {
           setStatus(`Error: ${data.error}`, true);

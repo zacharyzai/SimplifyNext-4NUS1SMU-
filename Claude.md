@@ -29,7 +29,7 @@ authoritative "what are we building and is it done" answer, see
 - LangGraph + `langgraph-checkpoint` for orchestration and cross-session state persistence
 - FastAPI + uvicorn for the backend API
 - Plain HTML/CSS/JS for the trace-panel demo UI (no build step)
-- AWS Bedrock (optional locally) — model `global.anthropic.claude-haiku-4-5-20251001-v1:0`, region `ap-southeast-1`, profile `workshop`
+- AWS Bedrock (optional locally) — model `us.anthropic.claude-haiku-4-5-20251001-v1:0` (regional US inference profile; the `global.` variant is blocked by an org-level Service Control Policy on this hackathon account), region `us-east-1` (`us-east-2`/`us-west-2` also confirmed working by organisers; `ap-southeast-1` is blocked), profile `workshop`
 - LLM access goes through `shared/llm.py` — one call surface for both providers, switched via `LLM_PROVIDER=bedrock|gemini|none`. Gemini (`google-genai` SDK, API key from Google AI Studio, not Cloud Console) is used for local development; Bedrock is the submission target. No other module should call `boto3` or `google-genai` directly.
 - <!-- TODO: add any additional libs (e.g. pandas, pydantic) once modules land -->
 

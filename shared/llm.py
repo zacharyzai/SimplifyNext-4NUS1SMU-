@@ -32,8 +32,16 @@ def _load_dotenv():
 
 _load_dotenv()
 
-MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-AWS_REGION = "ap-southeast-1"
+# Changed from "global.anthropic.claude-haiku-4-5-20251001-v1:0" (2026-09-07)
+# -- the "global." cross-region inference profile resolves to an unregioned
+# resource ARN this hackathon account's org-level Service Control Policy
+# explicitly denies bedrock:InvokeModel on. The "us." regional inference
+# profile for the same model works -- verified end to end.
+MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Changed from ap-southeast-1 to us-east-1 (2026-09-07) -- organisers
+# confirmed Bedrock is only enabled for this hackathon account in
+# us-east-1 / us-east-2 / us-west-2.
+AWS_REGION = "us-east-1"
 AWS_PROFILE = "workshop"
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 
@@ -45,10 +53,21 @@ def _bedrock_converse(system_prompt: str, user_text: str):
         print("WARNING: boto3 not installed -- skipping Bedrock call")
         return None
     try:
-        session = boto3.Session(
-            profile_name=os.getenv("AWS_PROFILE", AWS_PROFILE),
-            region_name=os.getenv("AWS_DEFAULT_REGION", AWS_REGION),
-        )
+        # Only pass profile_name when AWS_PROFILE is explicitly set -- boto3
+        # treats an explicit profile_name as "look up this NAMED profile in
+        # ~/.aws/config, full stop," and will NOT fall back to checking
+        # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN env vars
+        # even if they're present. Without this guard, a .env file with raw
+        # credentials but no AWS_PROFILE override always fails with
+        # ProfileNotFound("workshop") instead of ever trying them. Omitting
+        # profile_name entirely lets boto3.Session() use its normal default
+        # credential chain (env vars, ~/.aws/credentials [default], instance
+        # role, etc.), which is what actually picks up raw env credentials.
+        session_kwargs = {"region_name": os.getenv("AWS_DEFAULT_REGION", AWS_REGION)}
+        explicit_profile = os.getenv("AWS_PROFILE")
+        if explicit_profile:
+            session_kwargs["profile_name"] = explicit_profile
+        session = boto3.Session(**session_kwargs)
         client = session.client("bedrock-runtime")
         response = client.converse(
             modelId=MODEL_ID,

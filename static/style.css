@@ -369,6 +369,19 @@ textarea { font-family: inherit; }
 }
 
 .llm-card, .chat-card { gap: 8px; }
+
+.question-card-sticky {
+  /* Pinned near the top of the left column while an open question is
+     blocking progress, so it stays in view no matter how far the user
+     scrolls through the plan/constraints/rejected cards below it -- same
+     idea as the right column's .sticky-controls. Sticky on a [hidden]
+     element is a no-op, so this only ever takes effect while there's
+     actually a question waiting on an answer. */
+  position: sticky;
+  top: 12px;
+  z-index: 4;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+}
 .field-explainer { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--text-muted); }
 
 .chat-log {

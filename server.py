@@ -370,16 +370,28 @@ def health() -> Dict[str, Any]:
     its answers without ever landing) with no visible signal on stage.
     This is what the front end's readiness badge reads.
     """
+    import os
+
     bedrock_ok = False
     try:
         import boto3  # imported lazily so the whole server still starts without boto3-adjacent env quirks
-        session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
+        # Same guard as shared/llm.py's _bedrock_converse(): an explicit
+        # profile_name tells boto3 to look up ONLY that named profile in
+        # ~/.aws/config and never fall back to AWS_ACCESS_KEY_ID/
+        # AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN env vars -- so this check
+        # must skip profile_name entirely unless AWS_PROFILE is explicitly
+        # set, or it always reports False for raw env-var credentials even
+        # though shared/llm.py would actually succeed with them.
+        session_kwargs = {"region_name": os.getenv("AWS_DEFAULT_REGION", AWS_REGION)}
+        explicit_profile = os.getenv("AWS_PROFILE")
+        if explicit_profile:
+            session_kwargs["profile_name"] = explicit_profile
+        session = boto3.Session(**session_kwargs)
         creds = session.get_credentials()
         bedrock_ok = creds is not None and creds.get_frozen_credentials().access_key is not None
     except Exception:  # noqa: BLE001 -- absence of credentials must never crash /health
         bedrock_ok = False
 
-    import os
     provider = os.getenv("LLM_PROVIDER", "none").lower()
     if provider == "bedrock":
         llm_ready = bedrock_ok

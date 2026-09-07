@@ -20,12 +20,12 @@ should be depending on it yet.
 - **Failure modes:** file missing, JSON malformed, stale/outdated benchmark data.
 - **Truth level:** **Inferred** — a cited population-level prior, explicitly weighted below Bob's own history whenever both are available.
 
-## AWS Bedrock — Claude Haiku (`global.anthropic.claude-haiku-4-5-20251001-v1:0`)
+## AWS Bedrock — Claude Haiku (`us.anthropic.claude-haiku-4-5-20251001-v1:0`)
 
-- **Source name:** Bedrock LLM, region `ap-southeast-1`, profile `workshop`
+- **Source name:** Bedrock LLM, region `us-east-1` (also `us-east-2`/`us-west-2`, confirmed by organisers), profile `workshop`
 - **Latency SLA:** <!-- TODO: measure typical Bedrock invoke latency in this region; budget ~1-3s for narration calls -->
 - **Fallback strategy:** Every module must have a credential-free fallback path and complete without AWS credentials present (per README non-negotiable rule). On Bedrock failure, fall back to template-based narration rather than blocking the run.
-- **Failure modes:** missing/expired AWS SSO credentials (`aws sso login --profile workshop` not run), throttling, timeout, malformed/refused completion.
+- **Failure modes:** missing/expired AWS SSO credentials (`aws sso login --profile workshop` not run) or missing raw env credentials, throttling, timeout, malformed/refused completion. **Confirmed 2026-09-07:** the `global.` cross-region inference profile for this model resolves to an unregioned resource ARN that this hackathon account's org-level Service Control Policy explicitly denies `bedrock:InvokeModel` on — this is an account/region restriction, not a code or credential bug. The regional `us.` inference profile for the same model works. Also confirmed: `ap-southeast-1` is blocked entirely for this account; only `us-east-1`/`us-east-2`/`us-west-2` work.
 - **Truth level:** **Inferred** — used only for transcription/narration of decisions already made deterministically; never a source of numeric or decision truth (see non-negotiable rule #2 in README.md).
 
 ## LangGraph checkpointer (session state persistence)

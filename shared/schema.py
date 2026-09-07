@@ -7,8 +7,18 @@ from typing import TypedDict, List, Annotated
 import operator
 
 # --- Model / infra constants -------------------------------------------------
-MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-AWS_REGION = "ap-southeast-1"
+# Changed from "global.anthropic.claude-haiku-4-5-20251001-v1:0" (2026-09-07)
+# -- the "global." cross-region inference profile resolves to an unregioned
+# resource ARN that this hackathon account's org-level Service Control
+# Policy explicitly denies bedrock:InvokeModel on, independent of IAM
+# permissions. The "us." regional inference profile for the same model
+# resolves to a region-qualified ARN the SCP does not block -- verified
+# working end to end.
+MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Changed from ap-southeast-1 to us-east-1 (2026-09-07) -- the hackathon
+# organisers confirmed Bedrock is only enabled for this account in
+# us-east-1 / us-east-2 / us-west-2.
+AWS_REGION = "us-east-1"
 AWS_PROFILE = "workshop"
 
 # --- Permission tiers ---------------------------------------------------------

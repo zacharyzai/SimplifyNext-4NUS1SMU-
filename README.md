@@ -71,14 +71,28 @@ root — get one from Google AI Studio, not the Cloud Console.
 
 AWS Bedrock is optional for local development — every module has a
 credential-free fallback path and must run to completion without AWS
-credentials present. If you do have credentials:
+credentials present. If you do have credentials, either:
 
 ```bash
 aws sso login --profile workshop
 ```
 
-Model: `global.anthropic.claude-haiku-4-5-20251001-v1:0`, region
-`ap-southeast-1`, profile `workshop` (see `shared/schema.py`).
+or set raw credentials directly (e.g. in `.env`) — `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`. Only set `AWS_PROFILE` if
+you actually have a named profile configured in `~/.aws/config`;
+`shared/llm.py`/`server.py`'s Bedrock calls only pass `profile_name` to
+boto3 when `AWS_PROFILE` is explicitly set, so raw env credentials are
+picked up by boto3's default credential chain otherwise. (Passing an
+explicit `profile_name` boto3 doesn't recognize will fail with
+`ProfileNotFound` even when valid raw credentials are sitting right there
+in the environment — this was a real bug here, since fixed.)
+
+Model: `us.anthropic.claude-haiku-4-5-20251001-v1:0` (the regional US
+inference profile -- the `global.` variant hits an org-level Service
+Control Policy explicit deny on this hackathon account), region
+`us-east-1` (also works: `us-east-2`, `us-west-2` -- confirmed by
+organisers; `ap-southeast-1` is blocked), profile `workshop` (see
+`shared/schema.py`).
 
 ### LLM provider — required for the clarify loop and chat box to actually work
 

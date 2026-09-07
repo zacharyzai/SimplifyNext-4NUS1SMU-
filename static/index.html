@@ -41,6 +41,24 @@
       <p class="explanation-text" id="explanation-text">Press "Run agent" to start a thread. The right column fills in one step at a time, exactly as the agent completes them.</p>
     </div>
 
+    <div class="card question-card question-card-sticky" id="question-card" hidden>
+      <span class="eyebrow eyebrow-accent">Open question · answer to continue <span class="open-question-progress" id="open-question-progress" hidden></span></span>
+      <p class="question-text" id="open-question-text"></p>
+      <p class="field-explainer">Must include an actual date and a dollar amount — e.g. "On 2026-09-02, I made $50, 3 trips, 2 hours." A reply like "$50" alone will be rejected; it won't guess the date.</p>
+      <textarea id="answer-text" rows="2" placeholder="e.g. &quot;On 2026-09-02, I made $50, 3 trips, 2 hours.&quot;"></textarea>
+      <button class="btn btn-dark" id="btn-submit-answer" type="button">Submit answer</button>
+    </div>
+
+    <div class="card chat-card">
+      <span class="eyebrow">Tell the agent something <span class="eyebrow-hint">optional — transcribed by the LLM, decided by Python</span></span>
+      <p class="field-explainer">Report earnings (a shift, a payout screenshot) or state a recurring bill to plan around. The agent classifies and transcribes only — every number and decision below is deterministic. Earnings must include an actual date (e.g. 2026-09-05) — it won't guess "yesterday" or a weekday. Works any time — even after approving/rejecting a plan.</p>
+      <div class="chat-log" id="chat-log">
+        <p class="chat-empty" id="chat-empty">Nothing sent yet — try the example below.</p>
+      </div>
+      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot; or &quot;I have a $17.98 Netflix bill due on the 28th every month.&quot;"></textarea>
+      <button class="btn btn-outline" id="btn-send-raw-text" type="button">Send</button>
+    </div>
+
     <div class="card plan-card" id="plan-card" hidden>
       <span class="eyebrow">Chosen plan</span>
       <div class="plan-name" id="plan-name"></div>
@@ -61,24 +79,6 @@
       <summary id="rejected-summary"></summary>
       <ul class="rejected-list" id="rejected-list"></ul>
     </details>
-
-    <div class="card question-card" id="question-card" hidden>
-      <span class="eyebrow eyebrow-accent">Open question · answer to continue <span class="open-question-progress" id="open-question-progress" hidden></span></span>
-      <p class="question-text" id="open-question-text"></p>
-      <p class="field-explainer">Must include an actual date and a dollar amount — e.g. "On 2026-09-02, I made $50, 3 trips, 2 hours." A reply like "$50" alone will be rejected; it won't guess the date.</p>
-      <textarea id="answer-text" rows="2" placeholder="e.g. &quot;On 2026-09-02, I made $50, 3 trips, 2 hours.&quot;"></textarea>
-      <button class="btn btn-dark" id="btn-submit-answer" type="button">Submit answer</button>
-    </div>
-
-    <div class="card chat-card">
-      <span class="eyebrow">Tell the agent something <span class="eyebrow-hint">optional — transcribed by the LLM, decided by Python</span></span>
-      <p class="field-explainer">Report earnings (a shift, a payout screenshot) or state a recurring bill to plan around. The agent classifies and transcribes only — every number and decision below is deterministic. Earnings must include an actual date (e.g. 2026-09-05) — it won't guess "yesterday" or a weekday.</p>
-      <div class="chat-log" id="chat-log">
-        <p class="chat-empty" id="chat-empty">Nothing sent yet — try the example below.</p>
-      </div>
-      <textarea id="raw-text" rows="2" placeholder="e.g. &quot;Your Grab earnings for 2026-09-05: 6 trips, gross $62.00, tips $4.50, platform fee $6.00, online 18:00-21:30.&quot; or &quot;I have a $17.98 Netflix bill due on the 28th every month.&quot;"></textarea>
-      <button class="btn btn-outline" id="btn-send-raw-text" type="button">Send</button>
-    </div>
 
     <div class="endpoints-footer">
       <div>GET /run/&#123;thread_id&#125;/stream</div>
